@@ -16,3 +16,9 @@ numpy
 setuptools
 openai
 psycopg2-binary
+psycopg[binary]>=3.1.12
+redis==4.5.5
+django-redis==5.2.0
+python-dotenv==1.0.0
+django-jazzmin==3.0.1
+python-json-logger==4.0.0
