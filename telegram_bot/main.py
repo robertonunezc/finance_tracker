@@ -1,23 +1,31 @@
 import os
-# Add the parent directory to the Python path
-
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
-from handle_files.services.upload import UploadServiceFactory
-from services.store_data.store_data import ServiceType
-from receipt.models import STATUS_CHOICES, Receipt, ReceiptItem
-from receipt import services as receipt_services
-from receipt.dataclasses import ReceiptData
-from repositories.repository_factory import RepositoryFactory
-from jose import jwt
-from datetime import datetime, timedelta
-from extract_info.services import extract_receipt_text
-import os
+import sys
 import logging
 import io
 import tempfile
 import json
 import asyncio
+import django
+
+# Add the parent directory to the Python path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+# Configure Django settings before importing models
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'finance_tracker.settings')
+django.setup()
+
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
+from asgiref.sync import sync_to_async
+from handle_files.services.upload import UploadServiceFactory
+from receipt.models import STATUS_CHOICES, Receipt, ReceiptItem, Category
+from receipt import services as receipt_services
+from receipt.dataclasses import ReceiptData, ReceiptItem as ReceiptItemData
+from jose import jwt
+from datetime import datetime, timedelta
+from decimal import Decimal
+from extract_info.services import extract_receipt_text
+
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -29,9 +37,6 @@ _auth_lock = asyncio.Lock()
 
 # Initialize the services
 upload_service = UploadServiceFactory.create()
-
-# Initialize repository (using PostgreSQL as configured in the original code)
-receipt_repository = RepositoryFactory.create_receipt_repository(service_type=ServiceType.POSTGRES)
 
 # Define the start command handler
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -118,7 +123,7 @@ async def process_receipt_upload(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text("⛔You are not authorized to use this bot.")
         return
     
-    receipt = None
+    receipt_id = None
     temp_file_path = None
     
     try:
@@ -151,23 +156,29 @@ async def process_receipt_upload(update: Update, context: ContextTypes.DEFAULT_T
             user = 'anonymous'
         
         # Phase 1: Create receipt with PENDING status
-        receipt = receipt_services.create_receipt(Receipt(user_id=user, image_url=url, status=STATUS_CHOICES[0][0]))
-
-        logger.info(f"Receipt {receipt.receipt_id} created with PENDING status")
+        receipt_data = ReceiptData(
+            user_id=user,
+            image_url=url,
+            status='pending'
+        )
+        # Wrap Django ORM call in sync_to_async for async context
+        created_receipt = await sync_to_async(receipt_services.create_receipt)(receipt_data)
+        receipt_id = getattr(created_receipt, 'receipt_id', None)
+        
+        logger.info(f"Receipt {receipt_id} created with PENDING status")
         
         # Notify user immediately - upload successful
         await update.message.reply_text(
             f"✅ Receipt uploaded successfully!\n\n"
-            f"Receipt ID: `{receipt.receipt_id}`\n"
-            f"Status: {receipt.status.value}\n\n"
+            f"Receipt ID: `{receipt_id}`\n"
+            f"Status: pending\n\n"
             f"Processing receipt data...",
             parse_mode="Markdown"
         )
         
         # Phase 2: Update status to PROCESSING and extract data
-        receipt_services.update_receipt()
-        receipt_repository.update(receipt.receipt_id, status=ReceiptStatus.PROCESSING)
-        logger.info(f"Receipt {receipt.receipt_id} status updated to PROCESSING")
+        await sync_to_async(receipt_services.update_receipt)(receipt_id, status='processing')
+        logger.info(f"Receipt {receipt_id} status updated to PROCESSING")
         
         # Extract text from the receipt image using GPT-4 Vision
         file_full_path = os.path.join(os.getcwd(), temp_file_path)
@@ -203,7 +214,7 @@ async def process_receipt_upload(update: Update, context: ContextTypes.DEFAULT_T
             raise json.JSONDecodeError("No valid JSON found in GPT response", extracted_receipt, 0)
         
         # Parse extracted items
-        items: list[ReceiptItem] = []
+        items = []
         if 'items' in receipt_formatted:
             for item in receipt_formatted['items']:
                 item_name = item.get('name', 'Unknown Item')
@@ -211,7 +222,7 @@ async def process_receipt_upload(update: Update, context: ContextTypes.DEFAULT_T
                 item_quantity = int(item.get('quantity', 1)) if 'quantity' in item else 1
                 item_category = item.get('category', 'other') if 'category' in item else 'other'
                 
-                items.append(ReceiptItem(
+                items.append(ReceiptItemData(
                     name=item_name,
                     price=item_price,
                     quantity=item_quantity,
@@ -222,14 +233,15 @@ async def process_receipt_upload(update: Update, context: ContextTypes.DEFAULT_T
         
         # Phase 3: Update receipt with extracted data and COMPLETED status
         total_amount = float(receipt_formatted.get('total', 0.0))
-        receipt_repository.update(
-            receipt.receipt_id,
+        await sync_to_async(receipt_services.update_receipt)(
+            receipt_id,
             purchase_date=datetime.now(),
-            total_amount=total_amount,
+            total_amount=Decimal(str(total_amount)),
             items=items,
-            status=ReceiptStatus.COMPLETED
+            status='completed'
         )
-        logger.info(f"Receipt {receipt.receipt_id} completed with {len(items)} items")
+        
+        logger.info(f"Receipt {receipt_id} completed with {len(items)} items")
         
         # Cleanup temp file
         if temp_file_path and os.path.exists(temp_file_path):
@@ -246,35 +258,35 @@ async def process_receipt_upload(update: Update, context: ContextTypes.DEFAULT_T
             f"Total: ${total_amount:.2f}\n"
             f"Items: {len(items)}\n\n"
             f"{items_summary}\n\n"
-            f"Status: ✅ {ReceiptStatus.COMPLETED.value}",
+            f"Status: ✅ completed",
             parse_mode="Markdown"
         )
         
     except json.JSONDecodeError as e:
         logger.error(f"Failed to parse GPT response: {e}")
         # Update receipt status to FAILED
-        if receipt:
-            receipt_repository.update(receipt.receipt_id, status=ReceiptStatus.FAILED)
+        if receipt_id:
+            await sync_to_async(receipt_services.update_receipt)(receipt_id, status='failed')
         await update.message.reply_text(
             f"❌ Failed to parse receipt data.\n\n"
-            f"Receipt ID: `{receipt.receipt_id if receipt else 'N/A'}`\n"
-            f"Status: {ReceiptStatus.FAILED.value}\n\n"
+            f"Receipt ID: `{receipt_id if receipt_id else 'N/A'}`\n"
+            f"Status: failed\n\n"
             f"The image was saved but data extraction failed. Please try again.",
             parse_mode="Markdown"
         )
     except Exception as e:
         logger.error(f"Error processing receipt: {e}", exc_info=True)
         # Update receipt status to FAILED if it was created
-        if receipt:
+        if receipt_id:
             try:
-                receipt_repository.update(receipt.receipt_id, status=ReceiptStatus.FAILED)
+                await sync_to_async(receipt_services.update_receipt)(receipt_id, status='failed')
             except Exception as update_error:
                 logger.error(f"Failed to update receipt status: {update_error}")
         
         await update.message.reply_text(
             f"❌ Error processing receipt: {str(e)}\n\n"
-            f"Receipt ID: `{receipt.receipt_id if receipt else 'N/A'}`\n"
-            f"Status: {ReceiptStatus.FAILED.value if receipt else 'Not created'}",
+            f"Receipt ID: `{receipt_id if receipt_id else 'N/A'}`\n"
+            f"Status: failed",
             parse_mode="Markdown"
         )
     finally:

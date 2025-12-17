@@ -11,13 +11,16 @@ class ReceiptItem:
     name: str
     price: float
     quantity: Optional[int] = 1
-    category: Optional[Category] = Category.OTHER
+    category: Optional[str] = 'other'
+
 
 @dataclass
 class ReceiptData:
     user_id: str
+    image_url: str
     purchase_date: Optional[datetime] = None
     total_amount: Optional[Decimal] = None
-    image_url: str
+    status: Optional[str] = 'pending'
+    items: Optional[List[ReceiptItem]] = None
     status: Optional[str] = 'pending'
     items: Optional[List[ReceiptItem]] = None

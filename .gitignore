@@ -27,3 +27,4 @@ wheels/
 .DS_Store
 tickets/*
 banned.txt
+.github/copilot-instructions.md
