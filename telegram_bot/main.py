@@ -1,19 +1,17 @@
-#I want to create a telegram bot that upload photos using the upload service and authenticate users
-
-import sys
 import os
 # Add the parent directory to the Python path
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
-from services.upload.upload import UploadServiceFactory
-from services.authentication.authenticate import AuthenticationService
+from handle_files.services.upload import UploadServiceFactory
 from services.store_data.store_data import ServiceType
-from entities.receipt import Receipt, ReceiptItem, ReceiptStatus
+from receipt.models import STATUS_CHOICES, Receipt, ReceiptItem
+from receipt import services as receipt_services
+from receipt.dataclasses import ReceiptData
 from repositories.repository_factory import RepositoryFactory
 from jose import jwt
 from datetime import datetime, timedelta
-from gpt_extract import extract_receipt_text
+from extract_info.services import extract_receipt_text
 import os
 import logging
 import io
@@ -25,13 +23,12 @@ import asyncio
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-ALLOWED_USERS = [int(user_id) for user_id in os.getenv("ALLOWED_USERS").split(",")]
+ALLOWED_USERS = [int(user_id) for user_id in os.environ.get("ALLOWED_USERS").split(",")]
 BANNED_FILE_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "banned.txt"))
 _auth_lock = asyncio.Lock()
 
 # Initialize the services
 upload_service = UploadServiceFactory.create()
-auth_service = AuthenticationService(secret_key=os.getenv("JWT_SECRET"))
 
 # Initialize repository (using PostgreSQL as configured in the original code)
 receipt_repository = RepositoryFactory.create_receipt_repository(service_type=ServiceType.POSTGRES)
@@ -154,8 +151,8 @@ async def process_receipt_upload(update: Update, context: ContextTypes.DEFAULT_T
             user = 'anonymous'
         
         # Phase 1: Create receipt with PENDING status
-        receipt = Receipt(user_id=user, image_url=url, status=ReceiptStatus.PENDING)
-        receipt_repository.save(receipt)
+        receipt = receipt_services.create_receipt(Receipt(user_id=user, image_url=url, status=STATUS_CHOICES[0][0]))
+
         logger.info(f"Receipt {receipt.receipt_id} created with PENDING status")
         
         # Notify user immediately - upload successful
