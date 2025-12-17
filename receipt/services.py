@@ -25,4 +25,21 @@ def create_receipt(receipt_data:ReceiptData) -> ReceiptData:
             items=list(receipt.items.all())
         )
         return saved_data
-        
+
+def update_receipt(receipt_id: str,**kwargs) -> None:
+    """
+    Update receipt fields.
+    
+    Args:
+        receipt_id: The ID of the receipt to update
+        **kwargs: Fields to update
+    """
+    receipt = Receipt.objects.filter(receipt_id=receipt_id).update(**kwargs)
+    return ReceiptData(
+        user_id=receipt.user_id,
+        purchase_date=receipt.purchase_date,
+        total_amount=receipt.total_amount,
+        image_url=receipt.image_url,
+        status=receipt.status,
+        items=list(receipt.items.all())
+    )

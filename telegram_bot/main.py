@@ -165,6 +165,7 @@ async def process_receipt_upload(update: Update, context: ContextTypes.DEFAULT_T
         )
         
         # Phase 2: Update status to PROCESSING and extract data
+        receipt_services.update_receipt()
         receipt_repository.update(receipt.receipt_id, status=ReceiptStatus.PROCESSING)
         logger.info(f"Receipt {receipt.receipt_id} status updated to PROCESSING")
         
