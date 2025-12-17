@@ -32,8 +32,9 @@ def extract_receipt_text(image_path):
                         {
                             "type": "text",
                             "text": "Extract all readable text from this grocery receipt and structure it as a JSON object with the following format: {\"items\": [{\"name\": \"item name\", \"price\": 0.00, \"quantity\": 1, \"category\": \"category name\"}], \"total\": 0.00}. "
-                            "Categorize each item (e.g., food, beverage, household, other), those are not the only categories, you can try to match the item to a category. The tickets are from Mexico so are in spanish. "
-                            "If you dont find a good match for an item, do not hallucinate, just use 'other' as name and category."
+                            "Categorize each item using one of these categories: groceries, beverages, dairy, produce, meat, bakery, frozen, pantry, snacks, medication, health, personal_care, toiletries, household, cleaning, paper_products, pet_supplies, baby_products, electronics, restaurant, clothing, school_supplies, transportation, entertainment, utilities, gas, taxes, other. "
+                            "The tickets are from Mexico so are in spanish. "
+                            "If you dont find a good match for an item, do not hallucinate, just use 'other' as category."
                             "Return ONLY valid JSON, no markdown formatting."
                         },
                         {
