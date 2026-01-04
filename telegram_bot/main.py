@@ -7,14 +7,16 @@ import json
 import asyncio
 import django
 
+
 # Add the parent directory to the Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 # Configure Django settings before importing models
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'finance_tracker.settings')
 django.setup()
+from extract_info.ocr.tesseract_ocr import extract_text_from_receipt
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 from asgiref.sync import sync_to_async
 from handle_files.services.upload import UploadServiceFactory
@@ -24,7 +26,6 @@ from receipt.dataclasses import ReceiptData, ReceiptItem as ReceiptItemData
 from jose import jwt
 from datetime import datetime, timedelta
 from decimal import Decimal
-from extract_info.services import extract_receipt_text
 
 
 # Configure logging
@@ -127,21 +128,26 @@ async def process_receipt_upload(update: Update, context: ContextTypes.DEFAULT_T
     temp_file_path = None
     
     try:
-        # Get the photo file
-        photo_file = await context.bot.get_file(update.message.photo[-1].file_id)
+        # Get the uploaded document/file
+        document = update.message.document
+        if not document:
+            await update.message.reply_text("❌ No file found in the message.")
+            return
+        
+        document_file = await context.bot.get_file(document.file_id)
         
         file_data = io.BytesIO()
-        await photo_file.download_to_memory(out=file_data)
+        await document_file.download_to_memory(out=file_data)
         file_data.seek(0)
         
-        # Create a temporary file to store the photo
-        file_extension = os.path.splitext(photo_file.file_path)[1]
+        # Create a temporary file to store the uploaded file
+        file_extension = os.path.splitext(document.file_name)[1] if document.file_name else '.bin'
         with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as temp_file:
             temp_file.write(file_data.read())
             temp_file_path = temp_file.name
         
         # Upload to S3
-        file_name = f"{update.message.photo[-1].file_id}{file_extension}"
+        file_name = f"{document.file_id}{file_extension}"
         url = upload_service.upload_file(temp_file_path, file_name)
         logger.info(f"Photo uploaded to S3: {url}")
         
@@ -184,34 +190,11 @@ async def process_receipt_upload(update: Update, context: ContextTypes.DEFAULT_T
         file_full_path = os.path.join(os.getcwd(), temp_file_path)
         logger.info(f"Extracting text from receipt: {file_full_path}")
         
-        extracted_receipt = extract_receipt_text(file_full_path)
-        logger.info(f"GPT-4 extraction result: {extracted_receipt}")
+        extracted_receipt_text = extract_text_from_receipt(file_full_path)
+        logger.info(f"OCR extraction result: {extracted_receipt_text}")
         
         # Clean and parse JSON response with multiple strategies
         receipt_formatted = None
-        
-        # Strategy 1: Remove markdown code blocks
-        cleaned = extracted_receipt.replace('```json', '').replace('```', '').strip()
-        
-        # Strategy 2: Try to find JSON in the response
-        try:
-            receipt_formatted = json.loads(cleaned)
-            logger.info(f"Parsed JSON successfully: {receipt_formatted}")
-        except json.JSONDecodeError:
-            # Strategy 3: Try to extract JSON from within the text
-            import re
-            json_match = re.search(r'\{[\s\S]*\}', cleaned)
-            if json_match:
-                try:
-                    receipt_formatted = json.loads(json_match.group())
-                    logger.info(f"Extracted JSON from text: {receipt_formatted}")
-                except json.JSONDecodeError:
-                    pass
-        
-        # If still no valid JSON, raise error with the raw response
-        if not receipt_formatted:
-            logger.error(f"Could not parse JSON from GPT response. Raw response: {extracted_receipt[:500]}")
-            raise json.JSONDecodeError("No valid JSON found in GPT response", extracted_receipt, 0)
         
         # Parse extracted items
         items = []
@@ -340,8 +323,8 @@ def main():
     application.add_handler(CommandHandler("generate_token", generate_token))
     application.add_handler(CommandHandler("verify_token", verify_token))
     
-    # Add the receipt processing handler
-    application.add_handler(MessageHandler(filters.PHOTO, process_receipt_upload))
+    # Add the receipt processing handler (handles document/file uploads)
+    application.add_handler(MessageHandler(filters.Document.ALL, process_receipt_upload))
     
     # Start the bot
     logger.info("Starting the bot...")

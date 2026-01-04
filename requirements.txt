@@ -9,6 +9,7 @@ pytest
 python-jose[cryptography]
 tesseract
 pytesseract
+django-ocr
 Pillow
 opencv-python
 paddleocr

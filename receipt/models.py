@@ -49,6 +49,8 @@ class Receipt(models.Model):
     total_amount = models.DecimalField(max_digits=10, decimal_places=2)
     image_url = models.URLField()
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    extracted_text = models.TextField(null=True, blank=True)
+    extraction_result = models.JSONField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     
