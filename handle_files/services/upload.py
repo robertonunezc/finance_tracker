@@ -1,5 +1,6 @@
 import boto3
 import os
+import shutil
 from dotenv import load_dotenv
 from abc import ABC, abstractmethod
 import logging
@@ -126,12 +127,81 @@ class AwsUploadService(UploadService):
             raise
 
 
+class LocalUploadService(UploadService):
+    """
+    Implementation of UploadService for local file storage.
+    This is a simple implementation that saves files to a local directory.
+    """
+    
+    def __init__(self, base_directory='uploads'):
+        """
+        Initialize the local upload service with a base directory.
+        
+        Args:
+            base_directory (str): Base directory to save uploaded files
+        """
+        self.base_directory = base_directory
+        os.makedirs(self.base_directory, exist_ok=True)
+    
+    def upload_file(self, file_path, object_name):
+        """
+        Upload a file to local storage.
+        
+        Args:
+            file_path (str): Path to the file to upload
+            object_name (str): Name to give the file in local storage
+            
+        Returns:
+            str: Path to the uploaded file
+            
+        Raises:
+            FileNotFoundError: If the file doesn't exist
+            Exception: For other upload errors
+        """
+        try:
+            destination_path = os.path.join(self.base_directory, object_name)
+            shutil.copy2(file_path, destination_path)
+            return destination_path
+        except FileNotFoundError:
+            logging.error(f"File not found: {file_path}")
+            raise
+        except Exception as e:
+            logging.error(f"Error uploading file locally: {str(e)}")
+            raise
+    
+    def download_file(self, object_name, download_path):
+        """
+        Download a file from local storage.
+        
+        Args:
+            object_name (str): Name of the file in local storage
+            download_path (str): Path to save the downloaded file
+        
+        Raises:
+
+            FileNotFoundError: If the file doesn't exist
+            Exception: For other download errors
+        """
+        try:
+            source_path = os.path.join(self.base_directory, object_name)
+            shutil.copy2(source_path, download_path)
+        except FileNotFoundError:
+            logging.error(f"File not found locally: {object_name}")
+            raise
+        except Exception as e:
+            logging.error(f"Error downloading file locally: {str(e)}")
+            raise
 
 class UploadServiceFactory:
     """
     Factory class for creating upload services.
     """
     @staticmethod
-    def create()->UploadService:
-        return AwsUploadService()
+    def create(service_type: str)->UploadService:
+        if service_type == "aws":
+            return AwsUploadService()
+        elif service_type == "local":
+            return LocalUploadService()
+        else:
+            raise ValueError(f"Unknown upload service type: {service_type}")
 

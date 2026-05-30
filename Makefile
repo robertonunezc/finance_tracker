@@ -42,3 +42,6 @@ shell:
 
 collectstatic:
 	python manage.py collectstatic --noinput
+
+run_bot:
+	python telegram_bot/main.py

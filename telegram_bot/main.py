@@ -4,6 +4,7 @@ import logging
 import io
 import tempfile
 import json
+import re
 import asyncio
 import django
 
@@ -15,7 +16,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'finance_tracker.settings')
 django.setup()
 from extract_info.ocr.tesseract_ocr import extract_text_from_receipt
-
+from extract_info.services import  extract_receipt_text
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 from asgiref.sync import sync_to_async
@@ -37,7 +38,7 @@ BANNED_FILE_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 _auth_lock = asyncio.Lock()
 
 # Initialize the services
-upload_service = UploadServiceFactory.create()
+upload_service = UploadServiceFactory.create('local')  # Change to 'aws' for S3 uploads
 
 # Define the start command handler
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -129,6 +130,7 @@ async def process_receipt_upload(update: Update, context: ContextTypes.DEFAULT_T
     
     try:
         # Get the uploaded document/file
+        print(update.message)
         document = update.message.document
         if not document:
             await update.message.reply_text("❌ No file found in the message.")
@@ -146,10 +148,10 @@ async def process_receipt_upload(update: Update, context: ContextTypes.DEFAULT_T
             temp_file.write(file_data.read())
             temp_file_path = temp_file.name
         
-        # Upload to S3
+        # Upload file 
         file_name = f"{document.file_id}{file_extension}"
         url = upload_service.upload_file(temp_file_path, file_name)
-        logger.info(f"Photo uploaded to S3: {url}")
+        logger.info(f"Photo uploaded: {url}")
         
         # Get user identifier
         if update.message:
@@ -187,14 +189,27 @@ async def process_receipt_upload(update: Update, context: ContextTypes.DEFAULT_T
         logger.info(f"Receipt {receipt_id} status updated to PROCESSING")
         
         # Extract text from the receipt image using GPT-4 Vision
-        file_full_path = os.path.join(os.getcwd(), temp_file_path)
+        file_full_path = temp_file_path
         logger.info(f"Extracting text from receipt: {file_full_path}")
         
-        extracted_receipt_text = extract_text_from_receipt(file_full_path)
-        logger.info(f"OCR extraction result: {extracted_receipt_text}")
+        extracted_receipt_text = await sync_to_async(extract_receipt_text)(file_full_path)
+        logger.info(f"GPT-4 Vision extraction result: {extracted_receipt_text}")
         
         # Clean and parse JSON response with multiple strategies
+        raw_response = extracted_receipt_text.strip()
         receipt_formatted = None
+        try:
+            receipt_formatted = json.loads(raw_response)
+        except json.JSONDecodeError:
+            cleaned = raw_response.replace('```json', '').replace('```', '').strip()
+            try:
+                receipt_formatted = json.loads(cleaned)
+            except json.JSONDecodeError:
+                match = re.search(r'(\{.*\})', cleaned, re.S)
+                if match:
+                    receipt_formatted = json.loads(match.group(1))
+                else:
+                    raise
         
         # Parse extracted items
         items = []
