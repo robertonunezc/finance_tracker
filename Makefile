@@ -20,7 +20,7 @@ migrate:
 	python manage.py migrate
 
 runserver:
-	python manage.py runserver
+	python manage.py runserver 0.0.0.0:8003
 
 test:
 	python manage.py test

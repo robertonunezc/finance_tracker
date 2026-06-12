@@ -2,8 +2,10 @@ from openai import OpenAI
 import os
 from dotenv import load_dotenv
 import logging
+import asyncio
+import json
 from typing import List
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -34,7 +36,7 @@ def extract_receipt_text(image_path:str, max_attempts:int = 3)->Ticket:
     logger.info(f"Extracting text from image: {image_path}")
     for attempt in range(1, max_attempts + 1):
         try:
-            response = client.chat.completions.create(
+            response = client.chat.completions.parse(
                 model="gpt-4o-mini",
                 messages=[
                 {
@@ -57,12 +59,13 @@ def extract_receipt_text(image_path:str, max_attempts:int = 3)->Ticket:
                     ]
                 }
             ],
-            max_tokens=1000,
             response_format=Ticket)
-            result = response.choices[0].message.content
-            logger.info(f"GPT extraction successful: {len(result)} characters")
-            return Ticket(**json.loads(result))
-        except (ValidationError, json.JSONDecodeError) as e:
+            parsed_ticket = response.choices[0].message.parsed
+            if parsed_ticket is None:
+                raise ValueError(f"Model refused: {response.choices[0].message.refusal}")
+            logger.info(f"GPT extraction successful")
+            return parsed_ticket
+        except (ValidationError, json.JSONDecodeError, ValueError) as e:
             if attempt == max_attempts:
                 raise
             print(f"Attempt {attempt} failed: {e}. Retrying...")

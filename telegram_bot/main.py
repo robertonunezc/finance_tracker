@@ -195,42 +195,24 @@ async def process_receipt_upload(update: Update, context: ContextTypes.DEFAULT_T
         extracted_receipt_text = await sync_to_async(extract_receipt_text)(file_full_path)
         logger.info(f"GPT-4 Vision extraction result: {extracted_receipt_text}")
         
-        # Clean and parse JSON response with multiple strategies
-        raw_response = extracted_receipt_text.strip()
-        receipt_formatted = None
-        try:
-            receipt_formatted = json.loads(raw_response)
-        except json.JSONDecodeError:
-            cleaned = raw_response.replace('```json', '').replace('```', '').strip()
-            try:
-                receipt_formatted = json.loads(cleaned)
-            except json.JSONDecodeError:
-                match = re.search(r'(\{.*\})', cleaned, re.S)
-                if match:
-                    receipt_formatted = json.loads(match.group(1))
-                else:
-                    raise
+        # The returned object is a Ticket Pydantic model
+        ticket = extracted_receipt_text
         
         # Parse extracted items
         items = []
-        if 'items' in receipt_formatted:
-            for item in receipt_formatted['items']:
-                item_name = item.get('name', 'Unknown Item')
-                item_price = float(item.get('price', 0.0))
-                item_quantity = int(item.get('quantity', 1)) if 'quantity' in item else 1
-                item_category = item.get('category', 'other') if 'category' in item else 'other'
-                
+        if hasattr(ticket, 'items') and ticket.items:
+            for item in ticket.items:
                 items.append(ReceiptItemData(
-                    name=item_name,
-                    price=item_price,
-                    quantity=item_quantity,
-                    category=item_category
+                    name=item.name,
+                    price=float(item.price),
+                    quantity=int(item.quantity),
+                    category=item.category
                 ))
         else:
             logger.warning("No items found in extracted data")
         
         # Phase 3: Update receipt with extracted data and COMPLETED status
-        total_amount = float(receipt_formatted.get('total', 0.0))
+        total_amount = float(ticket.total)
         await sync_to_async(receipt_services.update_receipt)(
             receipt_id,
             purchase_date=datetime.now(),
