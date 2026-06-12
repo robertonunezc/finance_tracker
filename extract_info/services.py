@@ -2,10 +2,21 @@ from openai import OpenAI
 import os
 from dotenv import load_dotenv
 import logging
+from typing import List
+from pydantic import BaseModel, Field
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+class Item(BaseModel):
+    name: str = Field(description="Name of the item")
+    price: float = Field(description="Price of the item")
+    quantity: int = Field(description="Quantity of the item")
+    category: str = Field(description="Category of the item")
+
+class Ticket(BaseModel):
+    items: List[Item] = Field(description="List of items found in the ticket")
+    total: float = Field(description="Total amount of the ticket")
 
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 import base64
@@ -18,14 +29,14 @@ def encode_image_to_base64(image_path):
         return base64.b64encode(f.read()).decode("utf-8")
 
 # Prepare the API request
-def extract_receipt_text(image_path):
+def extract_receipt_text(image_path:str, max_attempts:int = 3)->Ticket:
     base64_image = encode_image_to_base64(image_path)
     logger.info(f"Extracting text from image: {image_path}")
-    
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
+    for attempt in range(1, max_attempts + 1):
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
                 {
                     "role": "user",
                     "content": [
@@ -46,14 +57,17 @@ def extract_receipt_text(image_path):
                     ]
                 }
             ],
-            max_tokens=1000
-        )
-        
-        result = response.choices[0].message.content
-        logger.info(f"GPT extraction successful: {len(result)} characters")
-        return result
-    except Exception as e:
-        logger.error(f"GPT extraction failed: {str(e)}")
+            max_tokens=1000,
+            response_format=Ticket)
+            result = response.choices[0].message.content
+            logger.info(f"GPT extraction successful: {len(result)} characters")
+            return Ticket(**json.loads(result))
+        except (ValidationError, json.JSONDecodeError) as e:
+            if attempt == max_attempts:
+                raise
+            print(f"Attempt {attempt} failed: {e}. Retrying...")
+        except Exception as e:
+            logger.error(f"GPT extraction failed: {str(e)}")
         raise
 
 # Example usage
