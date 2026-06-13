@@ -42,6 +42,27 @@ services:
       - "project=finance-tracker"
       - "environment=production"
       - "service=web"
+
+  celery:
+    build: .
+    container_name: finance_tracker_celery_prod
+    restart: unless-stopped
+    command: celery -A finance_tracker worker --loglevel=info
+    env_file:
+      - .env
+    environment:
+      - DEBUG=False
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+    volumes:
+      - ./media:/app/media
+    depends_on:
+      - postgres
+      - redis
+    labels:
+      - "project=finance-tracker"
+      - "environment=production"
+      - "service=celery"
   redis:
     image: redis:7-alpine
     container_name: redis_finance_tracker_prod
