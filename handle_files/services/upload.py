@@ -133,7 +133,7 @@ class LocalUploadService(UploadService):
     This is a simple implementation that saves files to a local directory.
     """
     
-    def __init__(self, base_directory='uploads'):
+    def __init__(self, base_directory='media/uploads'):
         """
         Initialize the local upload service with a base directory.
         

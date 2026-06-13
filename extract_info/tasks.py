@@ -2,7 +2,7 @@ from celery import shared_task
 import logging
 import os
 import asyncio
-from datetime import datetime
+from django.utils import timezone
 from decimal import Decimal
 from telegram import Bot
 
@@ -12,15 +12,20 @@ from receipt.dataclasses import ReceiptItem as ReceiptItemData
 
 logger = logging.getLogger(__name__)
 
-@shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=True, max_retries=3)
-def process_receipt_task(self, receipt_id: int, image_path: str, chat_id: int):
+import tempfile
+from handle_files.services.upload import UploadServiceFactory
+
+@shared_task(bind=True, max_retries=3, autoretry_for=(Exception,), retry_backoff=True)
+def process_receipt_task(self, receipt_id: str, image_path: str, chat_id: int):
     """
-    Celery task to execute extract_receipt_text asynchronously.
+    Background task to process a receipt image.
+    image_path is the relative path in the media volume.
     """
-    logger.info(f"Starting task: extract_receipt_text for receipt {receipt_id}. Attempt: {self.request.retries + 1}")
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
     
     try:
+        logger.info(f"Starting task: extract_receipt_text for receipt {receipt_id}. Attempt: {self.request.retries + 1}")
+        
         # Phase 2: Update status to PROCESSING and extract data
         receipt_services.update_receipt(receipt_id, status='processing')
         logger.info(f"Receipt {receipt_id} status updated to PROCESSING")
@@ -44,7 +49,7 @@ def process_receipt_task(self, receipt_id: int, image_path: str, chat_id: int):
         total_amount = float(ticket.total) if hasattr(ticket, 'total') else 0.0
         receipt_services.update_receipt(
             receipt_id,
-            purchase_date=datetime.now(),
+            purchase_date=timezone.now(),
             total_amount=Decimal(str(total_amount)),
             items=items,
             status='completed'

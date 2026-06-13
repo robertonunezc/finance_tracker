@@ -30,6 +30,8 @@ services:
       - DEBUG=False
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
+      - CELERY_BROKER_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://:${REDIS_PASSWORD}@redis:6379/0
     volumes:
       - ./staticfiles:/app/staticfiles
       - ./media:/app/media
@@ -54,6 +56,8 @@ services:
       - DEBUG=False
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
+      - CELERY_BROKER_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://:${REDIS_PASSWORD}@redis:6379/0
     volumes:
       - ./media:/app/media
     depends_on:

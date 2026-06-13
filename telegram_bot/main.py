@@ -37,7 +37,7 @@ BANNED_FILE_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 _auth_lock = asyncio.Lock()
 
 # Initialize the services
-upload_service = UploadServiceFactory.create('local')  # Change to 'aws' for S3 uploads
+upload_service = UploadServiceFactory.create('local')  # Use local volume uploads
 
 # Define the start command handler
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -187,7 +187,7 @@ async def process_receipt_upload(update: Update, context: ContextTypes.DEFAULT_T
         chat_id = update.effective_chat.id if update.effective_chat else update.message.chat_id
         process_receipt_task.delay(
             receipt_id=receipt_id,
-            image_path=temp_file_path,
+            image_path=url,
             chat_id=chat_id
         )
         logger.info(f"Handed off receipt {receipt_id} processing to Celery.")
