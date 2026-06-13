@@ -31,48 +31,47 @@ def encode_image_to_base64(image_path):
         return base64.b64encode(f.read()).decode("utf-8")
 
 # Prepare the API request
-def extract_receipt_text(image_path:str, max_attempts:int = 3)->Ticket:
+def extract_receipt_text(image_path:str)->Ticket:
     base64_image = encode_image_to_base64(image_path)
     logger.info(f"Extracting text from image: {image_path}")
-    for attempt in range(1, max_attempts + 1):
-        try:
-            response = client.chat.completions.parse(
-                model="gpt-4o-mini",
-                messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": "Extract all readable text from this grocery receipt and structure it as a JSON object with the following format: {\"items\": [{\"name\": \"item name\", \"price\": 0.00, \"quantity\": 1, \"category\": \"category name\"}], \"total\": 0.00}. "
-                            "Categorize each item using one of these categories: groceries, beverages, dairy, produce, meat, bakery, frozen, pantry, snacks, medication, health, personal_care, toiletries, household, cleaning, paper_products, pet_supplies, baby_products, electronics, restaurant, clothing, school_supplies, transportation, entertainment, utilities, gas, taxes, other. "
-                            "The tickets are from Mexico so are in spanish. "
-                            "If you dont find a good match for an item, do not hallucinate, just use 'other' as category."
-                            "Return ONLY valid JSON, no markdown formatting."
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{base64_image}"
-                            }
+    try:
+        response = client.chat.completions.parse(
+            model="gpt-4o-mini",
+            messages=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Extract all readable text from this grocery receipt and structure it as Ticket object"
+                        "Categorize each item using one of these categories: groceries, beverages, dairy, produce, meat, bakery, frozen, pantry, snacks, medication, health, personal_care, toiletries, household, cleaning, paper_products, pet_supplies, baby_products, electronics, restaurant, clothing, school_supplies, transportation, entertainment, utilities, gas, taxes, other. "
+                        "The tickets are from Mexico so are in spanish. "
+                        "The quantity data can be in a column with names like: CANT, CANTIDAD"
+                        "Always extract the raw name, do not halluciante or correct it, just use what it says in the receipt"
+                        "If you dont find a good match for an item category, do not hallucinate, just use 'other' as category."
+                        "Return ONLY valid JSON, no markdown formatting."
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{base64_image}"
                         }
-                    ]
-                }
-            ],
-            response_format=Ticket)
-            parsed_ticket = response.choices[0].message.parsed
-            if parsed_ticket is None:
-                raise ValueError(f"Model refused: {response.choices[0].message.refusal}")
-            logger.info(f"GPT extraction successful")
-            return parsed_ticket
-        except (ValidationError, json.JSONDecodeError, ValueError) as e:
-            if attempt == max_attempts:
-                raise
-            print(f"Attempt {attempt} failed: {e}. Retrying...")
-        except Exception as e:
-            logger.error(f"GPT extraction failed: {str(e)}")
+                    }
+                ]
+            }
+        ],
+        response_format=Ticket)
+        parsed_ticket = response.choices[0].message.parsed
+        if parsed_ticket is None:
+            raise ValueError(f"Model refused: {response.choices[0].message.refusal}")
+        logger.info(f"GPT extraction successful")
+        return parsed_ticket
+    except (ValidationError, json.JSONDecodeError, ValueError) as e:
+        logger.error(f"Validation or parsing error: {e}")
         raise
-
+    except Exception as e:
+        logger.error(f"GPT extraction failed: {str(e)}")
+        raise
 # Example usage
 if __name__ == "__main__":
     receipt_text = extract_receipt_text("tickets/w2.jpg")

@@ -45,3 +45,6 @@ collectstatic:
 
 run_bot:
 	python telegram_bot/main.py
+
+celery:
+	celery -A finance_tracker worker --loglevel=info

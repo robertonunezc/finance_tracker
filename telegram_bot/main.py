@@ -7,8 +7,6 @@ import json
 import re
 import asyncio
 import django
-
-
 # Add the parent directory to the Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -17,6 +15,7 @@ os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'finance_tracker.settings')
 django.setup()
 from extract_info.ocr.tesseract_ocr import extract_text_from_receipt
 from extract_info.services import  extract_receipt_text
+from extract_info.tasks import process_receipt_task
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 from asgiref.sync import sync_to_async
@@ -184,76 +183,14 @@ async def process_receipt_upload(update: Update, context: ContextTypes.DEFAULT_T
             parse_mode="Markdown"
         )
         
-        # Phase 2: Update status to PROCESSING and extract data
-        await sync_to_async(receipt_services.update_receipt)(receipt_id, status='processing')
-        logger.info(f"Receipt {receipt_id} status updated to PROCESSING")
-        
-        # Extract text from the receipt image using GPT-4 Vision
-        file_full_path = temp_file_path
-        logger.info(f"Extracting text from receipt: {file_full_path}")
-        
-        extracted_receipt_text = await sync_to_async(extract_receipt_text)(file_full_path)
-        logger.info(f"GPT-4 Vision extraction result: {extracted_receipt_text}")
-        
-        # The returned object is a Ticket Pydantic model
-        ticket = extracted_receipt_text
-        
-        # Parse extracted items
-        items = []
-        if hasattr(ticket, 'items') and ticket.items:
-            for item in ticket.items:
-                items.append(ReceiptItemData(
-                    name=item.name,
-                    price=float(item.price),
-                    quantity=int(item.quantity),
-                    category=item.category
-                ))
-        else:
-            logger.warning("No items found in extracted data")
-        
-        # Phase 3: Update receipt with extracted data and COMPLETED status
-        total_amount = float(ticket.total)
-        await sync_to_async(receipt_services.update_receipt)(
-            receipt_id,
-            purchase_date=datetime.now(),
-            total_amount=Decimal(str(total_amount)),
-            items=items,
-            status='completed'
+        # Phase 2: Hand off processing to Celery background task
+        chat_id = update.effective_chat.id if update.effective_chat else update.message.chat_id
+        process_receipt_task.delay(
+            receipt_id=receipt_id,
+            image_path=temp_file_path,
+            chat_id=chat_id
         )
-        
-        logger.info(f"Receipt {receipt_id} completed with {len(items)} items")
-        
-        # Cleanup temp file
-        if temp_file_path and os.path.exists(temp_file_path):
-            os.unlink(temp_file_path)
-        
-        # Notify user of successful extraction
-        items_summary = "\n".join([f"• {item.name}: ${item.price:.2f}" for item in items[:5]])
-        if len(items) > 5:
-            items_summary += f"\n... and {len(items) - 5} more items"
-        
-        await update.message.reply_text(
-            f"🎉 Receipt processed successfully!\n\n"
-            f"📊 Summary:\n"
-            f"Total: ${total_amount:.2f}\n"
-            f"Items: {len(items)}\n\n"
-            f"{items_summary}\n\n"
-            f"Status: ✅ completed",
-            parse_mode="Markdown"
-        )
-        
-    except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse GPT response: {e}")
-        # Update receipt status to FAILED
-        if receipt_id:
-            await sync_to_async(receipt_services.update_receipt)(receipt_id, status='failed')
-        await update.message.reply_text(
-            f"❌ Failed to parse receipt data.\n\n"
-            f"Receipt ID: `{receipt_id if receipt_id else 'N/A'}`\n"
-            f"Status: failed\n\n"
-            f"The image was saved but data extraction failed. Please try again.",
-            parse_mode="Markdown"
-        )
+        logger.info(f"Handed off receipt {receipt_id} processing to Celery.")
     except Exception as e:
         logger.error(f"Error processing receipt: {e}", exc_info=True)
         # Update receipt status to FAILED if it was created
@@ -264,18 +201,11 @@ async def process_receipt_upload(update: Update, context: ContextTypes.DEFAULT_T
                 logger.error(f"Failed to update receipt status: {update_error}")
         
         await update.message.reply_text(
-            f"❌ Error processing receipt: {str(e)}\n\n"
+            f"❌ Error initiating receipt processing: {str(e)}\n\n"
             f"Receipt ID: `{receipt_id if receipt_id else 'N/A'}`\n"
             f"Status: failed",
             parse_mode="Markdown"
         )
-    finally:
-        # Ensure temp file cleanup
-        if temp_file_path and os.path.exists(temp_file_path):
-            try:
-                os.unlink(temp_file_path)
-            except Exception as cleanup_error:
-                logger.warning(f"Failed to cleanup temp file: {cleanup_error}")
 
 # Authenticate the user (permanent ban list stored in banned.txt)
 def _load_banned_ids() -> set[int]:
