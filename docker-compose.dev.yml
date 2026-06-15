@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   postgres:
-    image: postgres:16
+    image: pgvector/pgvector:pg16
     container_name: finance_tracker_postgres_dev
     restart: unless-stopped
     env_file:
