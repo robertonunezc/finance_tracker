@@ -73,7 +73,14 @@ def extract_receipt_text(image_path:str)->Ticket:
         logger.error(f"GPT extraction failed: {str(e)}")
         raise
 # Example usage
+
+def generate_embedding(text:str):
+    response = client.embeddings.create(
+    input=text,
+    model="text-embedding-3-small"
+    )
+    return response.data[0].embedding
 if __name__ == "__main__":
-    receipt_text = extract_receipt_text("tickets/w2.jpg")
-    print(receipt_text)
-21
+    text = 'Cerveza Victoria 12 pzs 355ml'
+    embedding = generate_embedding(text)
+    print(embedding)

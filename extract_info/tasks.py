@@ -6,7 +6,7 @@ from django.utils import timezone
 from decimal import Decimal
 from telegram import Bot
 
-from extract_info.services import extract_receipt_text
+from extract_info import services as extract_info_service
 from receipt import services as receipt_services
 from receipt.dataclasses import ReceiptItem as ReceiptItemData
 
@@ -30,18 +30,20 @@ def process_receipt_task(self, receipt_id: str, image_path: str, chat_id: int):
         receipt_services.update_receipt(receipt_id, status='processing')
         logger.info(f"Receipt {receipt_id} status updated to PROCESSING")
         
-        ticket = extract_receipt_text(image_path)
+        ticket = extract_info_service.extract_receipt_text(image_path)
         
         # Parse extracted items
         items = []
         if hasattr(ticket, 'items') and ticket.items:
             for item in ticket.items:
-                items.append(ReceiptItemData(
+                receipt_item = ReceiptItemData(
                     name=item.name,
                     price=float(item.price),
                     quantity=int(item.quantity),
-                    category=item.category
-                ))
+                    category=item.category,
+                    embedding=extract_info_service.generate_embedding(text=item.name)
+                )
+                items.append(receipt_item)
         else:
             logger.warning("No items found in extracted data")
             

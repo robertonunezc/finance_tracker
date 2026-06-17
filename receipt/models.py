@@ -1,6 +1,6 @@
 from django.db import models
 import uuid
-
+from pgvector.django import VectorField
 STATUS_CHOICES = [
         ('pending', 'Pending'),
         ('processing', 'Processing'),
@@ -60,14 +60,12 @@ class Receipt(models.Model):
 
 class ReceiptItem(models.Model):
     """ReceiptItem model for storing individual items in a receipt."""
-    
-    
-    
     receipt = models.ForeignKey(Receipt, on_delete=models.CASCADE, related_name='items')
     name = models.CharField(max_length=255)
     price = models.FloatField()
     quantity = models.IntegerField(default=1)
     category = models.CharField(max_length=20, choices=CATEGORY_CHOICES, default=Category.OTHER)
+    embedding = VectorField(dimensions=1536,null=True, blank=True)
     
     def __str__(self):
         return f"{self.name} ({self.receipt.receipt_id})"

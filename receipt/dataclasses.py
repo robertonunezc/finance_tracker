@@ -12,7 +12,7 @@ class ReceiptItem:
     price: float
     quantity: Optional[int] = 1
     category: Optional[str] = 'other'
-
+    embedding: Optional[List[float]] = None 
 
 @dataclass
 class ReceiptData:
@@ -20,7 +20,5 @@ class ReceiptData:
     image_url: str
     purchase_date: Optional[datetime] = None
     total_amount: Optional[Decimal] = None
-    status: Optional[str] = 'pending'
-    items: Optional[List[ReceiptItem]] = None
     status: Optional[str] = 'pending'
     items: Optional[List[ReceiptItem]] = None

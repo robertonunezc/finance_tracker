@@ -64,7 +64,8 @@ def update_receipt(receipt_id: str, **kwargs) -> ReceiptData:
                 name=item.name,
                 price=item.price,
                 quantity=item.quantity,
-                category=item.category
+                category=item.category,
+                embedding=item.embedding
             )
     
     # Fetch and return the updated receipt

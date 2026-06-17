@@ -24,3 +24,4 @@ python-dotenv==1.0.0
 django-jazzmin==3.0.1
 python-json-logger==4.0.0
 celery==5.4.0
+pgvector==0.4.2

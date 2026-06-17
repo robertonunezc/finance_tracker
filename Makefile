@@ -44,7 +44,7 @@ collectstatic:
 	python manage.py collectstatic --noinput
 
 run_bot:
-	python telegram_bot/main.py
+	python -m watchfiles "python telegram_bot/main.py"
 
 celery:
-	celery -A finance_tracker worker --loglevel=info
+	watchfiles "celery -A finance_tracker worker --loglevel=info"

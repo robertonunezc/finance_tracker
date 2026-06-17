@@ -21,27 +21,27 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
-  celery:
-    build: .
-    container_name: finance_tracker_celery_dev
-    restart: unless-stopped
-    command: celery -A finance_tracker worker --loglevel=info
-    env_file:
-      - .env
-    environment:
-      - DEBUG=False
-      - POSTGRES_HOST=postgres
-      - POSTGRES_PORT=5432
-      - CELERY_BROKER_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
-      - CELERY_RESULT_BACKEND=redis://:${REDIS_PASSWORD}@redis:6379/0
-    volumes:
-      - ./media:/app/media
-    depends_on:
-      - postgres
-      - redis
-    labels:
-      - "project=finance-tracker"
-      - "environment=development"
+  # celery:
+  #   build: .
+  #   container_name: finance_tracker_celery_dev
+  #   restart: unless-stopped
+  #   command: celery -A finance_tracker worker --loglevel=info
+  #   env_file:
+  #     - .env
+  #   environment:
+  #     - DEBUG=False
+  #     - POSTGRES_HOST=postgres
+  #     - POSTGRES_PORT=5432
+  #     - CELERY_BROKER_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+  #     - CELERY_RESULT_BACKEND=redis://:${REDIS_PASSWORD}@redis:6379/0
+  #   volumes:
+  #     - ./media:/app/media
+  #   depends_on:
+  #     - postgres
+  #     - redis
+  #   labels:
+  #     - "project=finance-tracker"
+  #     - "environment=development"
 
   redis:
     image: redis:7-alpine
@@ -54,27 +54,6 @@ services:
     volumes:
       - redis_data:/data
     command: redis-server --requirepass ${REDIS_PASSWORD}
-
-  # promtail:
-  #   image: grafana/promtail:latest
-  #   env_file:
-  #     - .env
-  #   environment:
-  #     PROMTAIL_LOKI_API_KEY: ${PROMTAIL_LOKI_API_KEY}
-  #   volumes:
-  #     - ./logs:/var/log/water_delivery:ro
-  #     - ./infra/observability/promtail-config-dev.yaml:/etc/promtail/promtail-config.yaml:ro
-  #   entrypoint: ["/bin/sh", "-c"]
-  #   command: >
-  #     "echo -n \"$PROMTAIL_LOKI_API_KEY\" > /etc/promtail/api_key &&
-  #     ls -l /etc/promtail &&
-  #     /usr/bin/promtail -config.file=/etc/promtail/promtail-config.yaml"
-  #   labels:
-  #     - "project=water-delivery"
-  #     - "environment=development"
-  #     - "service=promtail"
-  #   depends_on:
-  #     - redis
 
 volumes:
   postgres_data:
