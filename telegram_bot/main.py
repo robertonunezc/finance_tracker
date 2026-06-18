@@ -1,11 +1,7 @@
 import os
 import sys
 import logging
-import io
-import tempfile
-import json
-import re
-import asyncio
+
 import django
 # Add the parent directory to the Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -34,12 +30,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-ALLOWED_USERS = [int(user_id) for user_id in os.environ.get("ALLOWED_USERS").split(",")]
-BANNED_FILE_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "banned.txt"))
-_auth_lock = asyncio.Lock()
 
-# Initialize the services
-upload_service = UploadServiceFactory.create('local')  # Use local volume uploads
+
 
 # Define the start command handler
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -112,37 +104,7 @@ async def verify_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Define the receipt upload and processing handler
 
-# Authenticate the user (permanent ban list stored in banned.txt)
-def _load_banned_ids() -> set[int]:
-    if not os.path.exists(BANNED_FILE_PATH):
-        return set()
-    with open(BANNED_FILE_PATH, "r", encoding="utf-8") as fh:
-        return {int(line.strip()) for line in fh if line.strip().isdigit()}
 
-
-def _append_banned_id(user_id: int) -> None:
-    # Append once per new ban; caller ensures it is needed.
-    with open(BANNED_FILE_PATH, "a", encoding="utf-8") as fh:
-        fh.write(f"{user_id}\n")
-
-
-async def authenticate_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    user_id = update.effective_user.id
-    async with _auth_lock:
-        banned_ids = _load_banned_ids()
-        if user_id in banned_ids:
-            await update.message.reply_text("User banned.")
-            return False
-
-        if user_id not in ALLOWED_USERS:
-            # Permanently ban and notify
-            _append_banned_id(user_id)
-            await update.message.reply_text("User not authorized. You have been banned.")
-            return False
-
-        return True
-    
-    
 
 # Define the main function
 def main():

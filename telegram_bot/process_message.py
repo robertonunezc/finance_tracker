@@ -1,3 +1,13 @@
+import os
+import sys
+import logging
+import io
+import tempfile
+import json
+import re
+import asyncio
+import django
+
 from telegram import Update
 from extract_info.ocr.tesseract_ocr import extract_text_from_receipt
 from extract_info.services import  extract_receipt_text
@@ -13,6 +23,49 @@ from jose import jwt
 from datetime import datetime, timedelta
 from decimal import Decimal
 
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+
+# Initialize the services
+upload_service = UploadServiceFactory.create('local')  # Use local volume uploads
+ALLOWED_USERS = [int(user_id) for user_id in os.environ.get("ALLOWED_USERS").split(",")]
+BANNED_FILE_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "banned.txt"))
+_auth_lock = asyncio.Lock()
+
+async def authenticate_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    user_id = update.effective_user.id
+    async with _auth_lock:
+        banned_ids = _load_banned_ids()
+        if user_id in banned_ids:
+            await update.message.reply_text("User banned.")
+            return False
+
+        if user_id not in ALLOWED_USERS:
+            # Permanently ban and notify
+            _append_banned_id(user_id)
+            await update.message.reply_text("User not authorized. You have been banned.")
+            return False
+
+        return True
+  # Authenticate the user (permanent ban list stored in banned.txt)
+def _load_banned_ids() -> set[int]:
+    if not os.path.exists(BANNED_FILE_PATH):
+        return set()
+    with open(BANNED_FILE_PATH, "r", encoding="utf-8") as fh:
+        return {int(line.strip()) for line in fh if line.strip().isdigit()}
+
+
+def _append_banned_id(user_id: int) -> None:
+    # Append once per new ban; caller ensures it is needed.
+    with open(BANNED_FILE_PATH, "a", encoding="utf-8") as fh:
+        fh.write(f"{user_id}\n")
+
+  
+    
 async def process_receipt_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Process receipt photo upload with OCR extraction and status tracking.
     
@@ -34,25 +87,25 @@ async def process_receipt_upload(update: Update, context: ContextTypes.DEFAULT_T
     try:
         # Get the uploaded document/file
         print(update.message)
-        document = update.message.document
+        document = update.message.photo
         if not document:
             await update.message.reply_text("❌ No file found in the message.")
             return
         
-        document_file = await context.bot.get_file(document.file_id)
+        document_file = await context.bot.get_file(document[-1].file_id)
         
         file_data = io.BytesIO()
         await document_file.download_to_memory(out=file_data)
         file_data.seek(0)
         
-        # Create a temporary file to store the uploaded file
-        file_extension = os.path.splitext(document.file_name)[1] if document.file_name else '.bin'
+        # Create a temporary photo to store the uploaded file
+        file_extension = ".jpg"
         with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as temp_file:
             temp_file.write(file_data.read())
             temp_file_path = temp_file.name
         
         # Upload file 
-        file_name = f"{document.file_id}{file_extension}"
+        file_name = f"{document[-1].file_id}{file_extension}"
         url = upload_service.upload_file(temp_file_path, file_name)
         logger.info(f"Photo uploaded: {url}")
         

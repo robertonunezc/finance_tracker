@@ -28,32 +28,15 @@ async def route_incoming_message(update: Update, context: ContextTypes.DEFAULT_T
             return
             
         elif mime_type in ["image/jpeg", "image/png"]:
-            # Handled below in the image logic
-            pass
+            await process_receipt_upload(update, context)
+            return
+
 
     # ─── ROUTE 3: IMAGES / PHOTOS ───
     if message.photo:
-        # Images are highly ambiguous (could be a receipt photo or a screenshot of a statement).
-        # Instead of paying an LLM to classify it, ask the user via a 1-click Inline Menu.
-        keyboard = [
-            [
-                InlineKeyboardButton("📄 Receipt/Ticket", callback_data=f"route_ticket"),
-                InlineKeyboardButton("🏦 Bank Statement", callback_data=f"route_statement")
-            ]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        # Save the file ID in user_data so the callback handler knows which file to process
-        file_id = message.photo[-1].file_id
-        context.user_data['pending_file_id'] = file_id
-        context.user_data['pending_file_type'] = 'photo'
-
-        await message.reply_text(
-            "I've received your image! Please select what it is so I can process it correctly:",
-            reply_markup=reply_markup
-        )
+        await process_receipt_upload(update, context)
         return
-
+        
     # Fallback for plain text or unsupported types
     await message.reply_text("Please send an image of a ticket, a PDF bank statement, or a voice note.")
 
