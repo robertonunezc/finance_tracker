@@ -26,10 +26,12 @@ from receipt.dataclasses import ReceiptData, ReceiptItem as ReceiptItemData
 from jose import jwt
 from datetime import datetime, timedelta
 from decimal import Decimal
-
-
+from routing_messages import handle_routing_menu_selection, route_incoming_message
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
 ALLOWED_USERS = [int(user_id) for user_id in os.environ.get("ALLOWED_USERS").split(",")]
@@ -55,7 +57,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Available commands:\n\n"
         "/start - Start the bot\n"
         "/help - Show this help message\n"
-        "You can also send me photos to upload them to S3."
+        ""
     )
 
 # Define the generate token handler
@@ -109,103 +111,6 @@ async def verify_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Token verification failed: {str(e)}")
 
 # Define the receipt upload and processing handler
-async def process_receipt_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Process receipt photo upload with OCR extraction and status tracking.
-    
-    Workflow:
-    1. Upload photo to S3
-    2. Create receipt with PENDING status
-    3. Notify user of successful upload
-    4. Extract data via GPT-4 Vision (status: PROCESSING)
-    5. Update receipt with extracted data (status: COMPLETED or FAILED)
-    6. Notify user of extraction results
-    """
-    if not await authenticate_user(update, context):
-        await update.message.reply_text("⛔You are not authorized to use this bot.")
-        return
-    
-    receipt_id = None
-    temp_file_path = None
-    
-    try:
-        # Get the uploaded document/file
-        print(update.message)
-        document = update.message.document
-        if not document:
-            await update.message.reply_text("❌ No file found in the message.")
-            return
-        
-        document_file = await context.bot.get_file(document.file_id)
-        
-        file_data = io.BytesIO()
-        await document_file.download_to_memory(out=file_data)
-        file_data.seek(0)
-        
-        # Create a temporary file to store the uploaded file
-        file_extension = os.path.splitext(document.file_name)[1] if document.file_name else '.bin'
-        with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as temp_file:
-            temp_file.write(file_data.read())
-            temp_file_path = temp_file.name
-        
-        # Upload file 
-        file_name = f"{document.file_id}{file_extension}"
-        url = upload_service.upload_file(temp_file_path, file_name)
-        logger.info(f"Photo uploaded: {url}")
-        
-        # Get user identifier
-        if update.message:
-            user = (
-                update.message.from_user.username or
-                update.message.from_user.first_name or
-                f"user_{update.message.from_user.id}"
-            )
-        else:
-            user = 'anonymous'
-        
-        # Phase 1: Create receipt with PENDING status
-        receipt_data = ReceiptData(
-            user_id=user,
-            image_url=url,
-            status='pending'
-        )
-        # Wrap Django ORM call in sync_to_async for async context
-        created_receipt = await sync_to_async(receipt_services.create_receipt)(receipt_data)
-        receipt_id = getattr(created_receipt, 'receipt_id', None)
-        
-        logger.info(f"Receipt {receipt_id} created with PENDING status")
-        
-        # Notify user immediately - upload successful
-        await update.message.reply_text(
-            f"✅ Receipt uploaded successfully!\n\n"
-            f"Receipt ID: `{receipt_id}`\n"
-            f"Status: pending\n\n"
-            f"Processing receipt data...",
-            parse_mode="Markdown"
-        )
-        
-        # Phase 2: Hand off processing to Celery background task
-        chat_id = update.effective_chat.id if update.effective_chat else update.message.chat_id
-        process_receipt_task.delay(
-            receipt_id=receipt_id,
-            image_path=url,
-            chat_id=chat_id
-        )
-        logger.info(f"Handed off receipt {receipt_id} processing to Celery.")
-    except Exception as e:
-        logger.error(f"Error processing receipt: {e}", exc_info=True)
-        # Update receipt status to FAILED if it was created
-        if receipt_id:
-            try:
-                await sync_to_async(receipt_services.update_receipt)(receipt_id, status='failed')
-            except Exception as update_error:
-                logger.error(f"Failed to update receipt status: {update_error}")
-        
-        await update.message.reply_text(
-            f"❌ Error initiating receipt processing: {str(e)}\n\n"
-            f"Receipt ID: `{receipt_id if receipt_id else 'N/A'}`\n"
-            f"Status: failed",
-            parse_mode="Markdown"
-        )
 
 # Authenticate the user (permanent ban list stored in banned.txt)
 def _load_banned_ids() -> set[int]:
@@ -247,11 +152,13 @@ def main():
     # Add command handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("generate_token", generate_token))
-    application.add_handler(CommandHandler("verify_token", verify_token))
+    # application.add_handler(CommandHandler("generate_token", generate_token))
+    # application.add_handler(CommandHandler("verify_token", verify_token))
     
     # Add the receipt processing handler (handles document/file uploads)
-    application.add_handler(MessageHandler(filters.Document.ALL, process_receipt_upload))
+    application.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL | filters.VOICE | filters.AUDIO,route_incoming_message ))
+    # 2. Callback query handler to catch the menu button clicks
+    application.add_handler(CallbackQueryHandler(handle_routing_menu_selection))
     
     # Start the bot
     logger.info("Starting the bot...")
