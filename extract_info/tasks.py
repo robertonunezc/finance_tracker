@@ -16,22 +16,28 @@ import tempfile
 from handle_files.services.upload import UploadServiceFactory
 
 @shared_task(bind=True, max_retries=3, autoretry_for=(Exception,), retry_backoff=True)
-def process_receipt_task(self, receipt_id: str, image_path: str, chat_id: int):
+def process_file_task(self, receipt_id: str, file_path: str, chat_id: int, file_type: str):
     """
-    Background task to process a receipt image.
-    image_path is the relative path in the media volume.
+    Background task to process a receipt file (image, audio, or pdf).
+    file_path is the relative path in the media volume.
+    file_type should be 'image', 'audio', or 'pdf'.
     """
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
     
     try:
-        logger.info(f"Starting task: extract_receipt_text for receipt {receipt_id}. Attempt: {self.request.retries + 1}")
+        logger.info(f"Starting task: process_file_task for receipt {receipt_id} (type: {file_type}). Attempt: {self.request.retries + 1}")
         
         # Phase 2: Update status to PROCESSING and extract data
         receipt_services.update_receipt(receipt_id, status='processing')
         logger.info(f"Receipt {receipt_id} status updated to PROCESSING")
         
-        ticket = extract_info_service.extract_receipt_text(image_path)
-        
+        if file_type == 'audio':
+            ticket = extract_info_service.transcribe_and_extract_text(file_path)
+        elif file_type in ['image', 'pdf']:
+            ticket = extract_info_service.extract_receipt_text(file_path)
+        else:
+            raise ValueError(f"Unsupported file type: {file_type}")
+            
         # Parse extracted items
         items = []
         if hasattr(ticket, 'items') and ticket.items:
@@ -59,24 +65,29 @@ def process_receipt_task(self, receipt_id: str, image_path: str, chat_id: int):
         logger.info(f"Receipt {receipt_id} completed with {len(items)} items")
         
         # Cleanup temp file
-        if image_path and os.path.exists(image_path):
+        if file_path and os.path.exists(file_path):
             try:
-                os.unlink(image_path)
+                os.unlink(file_path)
             except Exception as e:
-                logger.error(f"Failed to cleanup temp file {image_path}: {e}")
+                logger.error(f"Failed to cleanup temp file {file_path}: {e}")
                 
         # Send Success Message to Telegram
         if bot_token and chat_id:
             bot = Bot(token=bot_token)
+            
+            message_text = f"✅ Receipt {receipt_id} processed successfully!\nTotal: ${total_amount:,.2f}\nItems Extracted: {len(items)}\n\nItems:\n"
+            for item in items:
+                message_text += f"- {item.name} (x{item.quantity}): ${item.price:,.2f}\n"
+                
             asyncio.run(bot.send_message(
                 chat_id=chat_id,
-                text=f"✅ Receipt {receipt_id} processed successfully!\nTotal: ${total_amount:,.2f}\nItems Extracted: {len(items)}"
+                text=message_text
             ))
 
         return True
 
     except Exception as e:
-        logger.error(f"Task process_receipt_task failed for {image_path}: {e}")
+        logger.error(f"Task process_file_task failed for {file_path}: {e}")
         
         # If we exhausted retries, mark as error and notify user
         if self.request.retries >= self.max_retries:
@@ -92,3 +103,4 @@ def process_receipt_task(self, receipt_id: str, image_path: str, chat_id: int):
                 logger.error(f"Failed to update error status for {receipt_id}: {inner_e}")
 
         raise
+

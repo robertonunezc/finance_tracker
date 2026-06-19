@@ -80,6 +80,63 @@ def generate_embedding(text:str):
     model="text-embedding-3-small"
     )
     return response.data[0].embedding
+
+def transcribe_and_extract_text(audio_path:str):
+    """
+    Transcribe audio file and extract structured data.
+    """
+    logger.info(f"Starting transcription and extraction for: {audio_path}")
+    
+    try:
+        # 1. Transcribe the audio
+        logger.info("Step 1: Transcribing audio...")
+        transcription = client.audio.transcriptions.create(
+            model="whisper-1",
+            file=open(audio_path, "rb"),
+            language="es"  # Specify language for better accuracy
+        )
+        transcribed_text = transcription.text
+        logger.info(f"Transcription complete: {transcribed_text[:100]}...")
+        
+        # 2. Extract structured data from transcription
+        logger.info("Step 2: Extracting structured data from transcription...")
+        response = client.chat.completions.parse(
+            model="gpt-4o-mini",
+            messages=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": f"Extract all readable text from this grocery receipt and structure it as Ticket object. "
+                        "The text has been transcribed from an audio recording of a receipt.\n\n"
+                        f"Transcription:\n{transcribed_text}\n\n"
+                        "Categorize each item using one of these categories: groceries, beverages, dairy, produce, meat, bakery, frozen, pantry, snacks, medication, health, personal_care, toiletries, household, cleaning, paper_products, pet_supplies, baby_products, electronics, restaurant, clothing, school_supplies, transportation, entertainment, utilities, gas, taxes, other. "
+                        "The tickets are from Mexico so are in spanish. "
+                        "The quantity data can be in a column with names like: CANT, CANTIDAD"
+                        "Always extract the raw name, do not hallucinate or correct it, just use what it says in the receipt"
+                        "If you dont find a good match for an item category, do not hallucinate, just use 'other' as category."
+                        "Return ONLY valid JSON, no markdown formatting."
+                    }
+                ]
+            }
+        ],
+        response_format=Ticket)
+        
+        parsed_ticket = response.choices[0].message.parsed
+        if parsed_ticket is None:
+            raise ValueError(f"Model refused: {response.choices[0].message.refusal}")
+        
+        logger.info(f"Extraction successful: {len(parsed_ticket.items)} items found")
+        return parsed_ticket
+        
+    except (ValidationError, json.JSONDecodeError, ValueError) as e:
+        logger.error(f"Validation or parsing error: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Transcription or extraction failed: {str(e)}")
+        raise
+
 if __name__ == "__main__":
     text = 'Cerveza Victoria 12 pzs 355ml'
     embedding = generate_embedding(text)

@@ -11,7 +11,7 @@ import django
 from telegram import Update
 from extract_info.ocr.tesseract_ocr import extract_text_from_receipt
 from extract_info.services import  extract_receipt_text
-from extract_info.tasks import process_receipt_task
+from extract_info.tasks import process_file_task
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 from asgiref.sync import sync_to_async
@@ -142,10 +142,11 @@ async def process_receipt_upload(update: Update, context: ContextTypes.DEFAULT_T
         
         # Phase 2: Hand off processing to Celery background task
         chat_id = update.effective_chat.id if update.effective_chat else update.message.chat_id
-        process_receipt_task.delay(
+        process_file_task.delay(
             receipt_id=receipt_id,
-            image_path=url,
-            chat_id=chat_id
+            file_path=url,
+            chat_id=chat_id,
+            file_type='image'
         )
         logger.info(f"Handed off receipt {receipt_id} processing to Celery.")
     except Exception as e:
@@ -168,8 +169,51 @@ async def process_receipt_upload(update: Update, context: ContextTypes.DEFAULT_T
 
 async def process_voice_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Processing your voice message... 🎙️")
-    # Your whisper/transcription logic goes here
+    # get audio file from telegram
+    document = update.message.audio or update.message.voice
+    if not document:
+        await update.message.reply_text("❌ No file found in the message.")
+        return
+    
+    document_file = await context.bot.get_file(document.file_id)
+    file_data = io.BytesIO()
+    await document_file.download_to_memory(out=file_data)
+    file_data.seek(0)
+    # upload to locally now 
+    file_name = f"{document.file_id}.{document.mime_type.split('/')[-1]}"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=f".{document.mime_type.split('/')[-1]}") as temp_file:
+        temp_file.write(file_data.read())
+        temp_file_path = temp_file.name
+    
+    url = upload_service.upload_file(temp_file_path, file_name)
+    logger.info(f"Voice message uploaded: {url}")
+    
+    # create receipt in db with status pending
+    receipt_data = ReceiptData(
+        user_id=update.effective_user.id,
+        image_url=url,
+        status='pending'
+    )
+    created_receipt = await sync_to_async(receipt_services.create_receipt)(receipt_data)
+    receipt_id = getattr(created_receipt, 'receipt_id', None)
+    logger.info(f"Receipt {receipt_id} created with PENDING status")
+    await update.message.reply_text(
+        f"✅ Receipt uploaded successfully!\n\n"
+        f"Receipt ID: `{receipt_id}`\n"
+        f"Status: pending\n\n"
+        f"Processing receipt data...",
+        parse_mode="Markdown"
+    )
+    chat_id = update.effective_chat.id if update.effective_chat else update.message.chat_id
+    process_file_task.delay(
+        receipt_id=receipt_id,
+        file_path=url,
+        chat_id=chat_id,
+        file_type='audio'
+    )
+    logger.info(f"Handed off receipt {receipt_id} processing to Celery.")
+
+
 
 async def process_bank_statement(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Processing your PDF bank statement... 🏦")
-    # Your multi-page PDF processing / LLM text analysis goes here

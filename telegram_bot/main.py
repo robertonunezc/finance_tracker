@@ -11,7 +11,7 @@ os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'finance_tracker.settings')
 django.setup()
 from extract_info.ocr.tesseract_ocr import extract_text_from_receipt
 from extract_info.services import  extract_receipt_text
-from extract_info.tasks import process_receipt_task
+from extract_info.tasks import process_file_task
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 from asgiref.sync import sync_to_async
