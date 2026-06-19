@@ -33,8 +33,10 @@ def process_file_task(self, receipt_id: str, file_path: str, chat_id: int, file_
         
         if file_type == 'audio':
             ticket = extract_info_service.transcribe_and_extract_text(file_path)
-        elif file_type in ['image', 'pdf']:
+        elif file_type == 'image':
             ticket = extract_info_service.extract_receipt_text(file_path)
+        elif file_type == 'pdf':
+            ticket = extract_info_service.extract_bank_statement_text(file_path)
         else:
             raise ValueError(f"Unsupported file type: {file_type}")
             
@@ -42,12 +44,18 @@ def process_file_task(self, receipt_id: str, file_path: str, chat_id: int, file_
         items = []
         if hasattr(ticket, 'items') and ticket.items:
             for item in ticket.items:
+                # Look up if you've bought something similar before
+                matched_category, vector_data = extract_info_service.find_nearest_category(item.name)
+                if matched_category:
+                    category = matched_category
+                else:
+                    category = extract_info_service.categorize_item(item.name)
                 receipt_item = ReceiptItemData(
                     name=item.name,
                     price=float(item.price),
                     quantity=int(item.quantity),
-                    category=item.category,
-                    embedding=extract_info_service.generate_embedding(text=item.name)
+                    category=category,
+                    embedding=vector_data
                 )
                 items.append(receipt_item)
         else:

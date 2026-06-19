@@ -9,6 +9,13 @@ from pydantic import BaseModel, Field, ValidationError
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+EXTRACTION_PROMPT="""
+Extract all readable text from this grocery receipt and structure it as Ticket object
+The tickets are from Mexico so are in spanish. 
+The quantity data can be in a column with names like: CANT, CANTIDAD
+Always extract the raw name, do not halluciante or correct it, just use what it says in the receipt
+Return ONLY valid JSON, no markdown formatting.
+"""
 
 class Item(BaseModel):
     name: str = Field(description="Name of the item")
@@ -43,13 +50,7 @@ def extract_receipt_text(image_path:str)->Ticket:
                 "content": [
                     {
                         "type": "text",
-                        "text": "Extract all readable text from this grocery receipt and structure it as Ticket object"
-                        "Categorize each item using one of these categories: groceries, beverages, dairy, produce, meat, bakery, frozen, pantry, snacks, medication, health, personal_care, toiletries, household, cleaning, paper_products, pet_supplies, baby_products, electronics, restaurant, clothing, school_supplies, transportation, entertainment, utilities, gas, taxes, other. "
-                        "The tickets are from Mexico so are in spanish. "
-                        "The quantity data can be in a column with names like: CANT, CANTIDAD"
-                        "Always extract the raw name, do not halluciante or correct it, just use what it says in the receipt"
-                        "If you dont find a good match for an item category, do not hallucinate, just use 'other' as category."
-                        "Return ONLY valid JSON, no markdown formatting."
+                        "text": EXTRACTION_PROMPT
                     },
                     {
                         "type": "image_url",
@@ -81,6 +82,32 @@ def generate_embedding(text:str):
     )
     return response.data[0].embedding
 
+def categorize_item(item:str)->str:
+    """
+    Categorize an item using OpenAI.
+    """
+    response = client.chat.completions.parse(
+        model="gpt-4o-mini",
+        messages=[
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": f"Categorize this item {item} as one of the following categories: groceries, beverages, dairy, produce, meat, bakery, frozen, pantry, snacks, medication, health, personal_care, toiletries, household, cleaning, paper_products, pet_supplies, baby_products, electronics, restaurant, clothing, school_supplies, transportation, entertainment, utilities, gas, taxes, other. "
+                    "Do not return any additional text, just the category name."
+                    "If you dont know the category, return 'other'"
+                }
+            ]
+        }
+    ])
+    category = response.choices[0].message.parsed
+    logger.info(f"GPT categorization successful {category}")
+    return category
+
+def extract_bank_statement_text(pdf_path:str):
+    return "Bank accounts are not implemented yet"
+
 def transcribe_and_extract_text(audio_path:str):
     """
     Transcribe audio file and extract structured data.
@@ -100,6 +127,7 @@ def transcribe_and_extract_text(audio_path:str):
         
         # 2. Extract structured data from transcription
         logger.info("Step 2: Extracting structured data from transcription...")
+
         response = client.chat.completions.parse(
             model="gpt-4o-mini",
             messages=[
@@ -108,15 +136,7 @@ def transcribe_and_extract_text(audio_path:str):
                 "content": [
                     {
                         "type": "text",
-                        "text": f"Extract all readable text from this grocery receipt and structure it as Ticket object. "
-                        "The text has been transcribed from an audio recording of a receipt.\n\n"
-                        f"Transcription:\n{transcribed_text}\n\n"
-                        "Categorize each item using one of these categories: groceries, beverages, dairy, produce, meat, bakery, frozen, pantry, snacks, medication, health, personal_care, toiletries, household, cleaning, paper_products, pet_supplies, baby_products, electronics, restaurant, clothing, school_supplies, transportation, entertainment, utilities, gas, taxes, other. "
-                        "The tickets are from Mexico so are in spanish. "
-                        "The quantity data can be in a column with names like: CANT, CANTIDAD"
-                        "Always extract the raw name, do not hallucinate or correct it, just use what it says in the receipt"
-                        "If you dont find a good match for an item category, do not hallucinate, just use 'other' as category."
-                        "Return ONLY valid JSON, no markdown formatting."
+                        "text": EXTRACTION_PROMPT + f"\n\nTranscription:\n{transcribed_text}\n\n"
                     }
                 ]
             }
@@ -137,7 +157,24 @@ def transcribe_and_extract_text(audio_path:str):
         logger.error(f"Transcription or extraction failed: {str(e)}")
         raise
 
-if __name__ == "__main__":
-    text = 'Cerveza Victoria 12 pzs 355ml'
-    embedding = generate_embedding(text)
-    print(embedding)
+from django.db.models.functions import CosineDistance
+from .models import ReceiptItem
+import openai
+
+def find_nearest_category(item_name_string):
+    # 1. Generate embedding for the newly extracted item
+    new_vector = generate_embedding(item_name_string)
+    # 2. Query Postgres for the closest match in your history
+    closest_match = ReceiptItem.objects.annotate(
+        distance=CosineDistance('embedding', new_vector)
+    ).order_by('distance').first() # Get the single closest item
+
+    # 3. Set a strict similarity threshold (0.0 means identical, 1.0 means opposite)
+    # 0.3 to 0.4 is generally a safe spot for semantic similarity
+    if closest_match and closest_match.distance < 0.35:
+        logger.info(f"Found similar category: {closest_match.category} with distance {closest_match.distance}")
+        logger.info(f"Item name: {item_name_string}")
+        logger.info(f"Closest match: {closest_match.name}")
+        return closest_match.category, new_vector
+        
+    return None, new_vector
