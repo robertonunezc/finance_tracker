@@ -6,13 +6,16 @@ import asyncio
 import json
 from typing import List
 from pydantic import BaseModel, Field, ValidationError
+from receipt.models import ReceiptItem
+from receipt import services as receipt_services
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 EXTRACTION_PROMPT="""
 Extract all readable text from this grocery receipt and structure it as Ticket object
 The tickets are from Mexico so are in spanish. 
-The quantity data can be in a column with names like: CANT, CANTIDAD
+The quantity data can be in a column with names like: CANT, CANTIDAD. If you can not extract the quantity, return 1 by default for all the items
 Always extract the raw name, do not halluciante or correct it, just use what it says in the receipt
 Return ONLY valid JSON, no markdown formatting.
 """
@@ -86,7 +89,8 @@ def categorize_item(item:str)->str:
     """
     Categorize an item using OpenAI.
     """
-    response = client.chat.completions.parse(
+    logger.info(f"Categorizing item: {item}")
+    response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
         {
@@ -95,13 +99,14 @@ def categorize_item(item:str)->str:
                 {
                     "type": "text",
                     "text": f"Categorize this item {item} as one of the following categories: groceries, beverages, dairy, produce, meat, bakery, frozen, pantry, snacks, medication, health, personal_care, toiletries, household, cleaning, paper_products, pet_supplies, baby_products, electronics, restaurant, clothing, school_supplies, transportation, entertainment, utilities, gas, taxes, other. "
+                    "Items will be in spanish"
                     "Do not return any additional text, just the category name."
                     "If you dont know the category, return 'other'"
                 }
             ]
         }
     ])
-    category = response.choices[0].message.parsed
+    category = response.choices[0].message.content
     logger.info(f"GPT categorization successful {category}")
     return category
 
@@ -157,17 +162,13 @@ def transcribe_and_extract_text(audio_path:str):
         logger.error(f"Transcription or extraction failed: {str(e)}")
         raise
 
-from django.db.models.functions import CosineDistance
-from .models import ReceiptItem
-import openai
 
-def find_nearest_category(item_name_string):
+
+def find_nearest_category(item_name_string:str)->tuple[str, list[float]]:
     # 1. Generate embedding for the newly extracted item
     new_vector = generate_embedding(item_name_string)
     # 2. Query Postgres for the closest match in your history
-    closest_match = ReceiptItem.objects.annotate(
-        distance=CosineDistance('embedding', new_vector)
-    ).order_by('distance').first() # Get the single closest item
+    closest_match = receipt_services.get_closest_match_receipt_item(item_name_string, new_vector)
 
     # 3. Set a strict similarity threshold (0.0 means identical, 1.0 means opposite)
     # 0.3 to 0.4 is generally a safe spot for semantic similarity

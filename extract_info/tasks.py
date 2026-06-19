@@ -45,7 +45,7 @@ def process_file_task(self, receipt_id: str, file_path: str, chat_id: int, file_
         if hasattr(ticket, 'items') and ticket.items:
             for item in ticket.items:
                 # Look up if you've bought something similar before
-                matched_category, vector_data = extract_info_service.find_nearest_category(item.name)
+                matched_category, vector_data = extract_info_service.find_nearest_category(item_name_string=item.name)
                 if matched_category:
                     category = matched_category
                 else:

@@ -12,7 +12,10 @@ STATUS_CHOICES = [
 class Category(models.TextChoices):
     GROCERIES = 'groceries', 'Groceries'
     BEVERAGES = 'beverages', 'Beverages'
+    ALCOHOL = 'alcohol', 'Alcohol'
     DAIRY = 'dairy', 'Dairy'
+    FRUITS = 'fruits', 'Fruits'
+    VEGETABLES = 'vegetables', 'Vegetables'
     PRODUCE = 'produce', 'Produce'
     MEAT = 'meat', 'Meat & Protein'
     BAKERY = 'bakery', 'Bakery'

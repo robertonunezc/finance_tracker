@@ -3,6 +3,7 @@ from typing import List, Optional
 from datetime import datetime
 from decimal import Decimal
 from .dataclasses import ReceiptData
+from pgvector.django import CosineDistance
 
 def create_receipt(receipt_data: ReceiptData) -> ReceiptData:
     """
@@ -122,3 +123,8 @@ def list_receipts_by_user(user_id: str) -> List[ReceiptData]:
             )
         )
     return receipt_list
+
+def get_closest_match_receipt_item(item_name: str,  new_vector: List[float]) -> Optional[ReceiptItem]:
+    return ReceiptItem.objects.annotate(
+        distance=CosineDistance('embedding', new_vector)
+    ).order_by('distance').first() 
