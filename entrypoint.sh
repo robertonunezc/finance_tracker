@@ -18,7 +18,4 @@ echo "Collecting static files..."
 python manage.py collectstatic --noinput
 
 echo "Starting Gunicorn server..."
-exec gunicorn --bind 0.0.0.0:8000 water_delivery.wsgi:application &
-
-echo "Starting Telegram bot..."
-python3 ./telegram_bot/main.py
+exec gunicorn --bind 0.0.0.0:${PORT:-8000} --workers ${GUNICORN_WORKERS:-3} finance_tracker.wsgi:application

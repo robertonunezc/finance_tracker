@@ -22,7 +22,7 @@ from receipt.dataclasses import ReceiptData, ReceiptItem as ReceiptItemData
 from jose import jwt
 from datetime import datetime, timedelta
 from decimal import Decimal
-from routing_messages import handle_routing_menu_selection, route_incoming_message
+from telegram_bot.routing_messages import handle_routing_menu_selection, route_incoming_message
 # Configure logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',

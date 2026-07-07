@@ -1,56 +1,106 @@
 version: '3.8'
 
+x-app-environment: &app-environment
+  DEBUG: ${DEBUG:-False}
+  ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1}
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: "5432"
+  CELERY_BROKER_URL: "redis://:${REDIS_PASSWORD}@redis:6379/0"
+  CELERY_RESULT_BACKEND: "redis://:${REDIS_PASSWORD}@redis:6379/0"
+
+x-app-service: &app-service
+  build: .
+  image: finance_tracker_app:latest
+  restart: unless-stopped
+  env_file:
+    - .env
+  environment:
+    <<: *app-environment
+  volumes:
+    - media_data:/app/media
+    - staticfiles_data:/app/staticfiles
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  labels:
+    - "project=finance-tracker"
+    - "environment=production"
+
 services:
+  web:
+    <<: *app-service
+    container_name: finance_tracker_web
+    command: /app/entrypoint.sh
+    ports:
+      - "${WEB_PORT:-8000}:8000"
+    labels:
+      - "project=finance-tracker"
+      - "environment=production"
+      - "service=web"
+
+  bot:
+    <<: *app-service
+    container_name: finance_tracker_bot
+    command: python -m telegram_bot.main
+    labels:
+      - "project=finance-tracker"
+      - "environment=production"
+      - "service=bot"
+
+  celery:
+    <<: *app-service
+    container_name: finance_tracker_celery
+    command: celery -A finance_tracker worker --loglevel=info
+    labels:
+      - "project=finance-tracker"
+      - "environment=production"
+      - "service=celery"
+
   postgres:
     image: pgvector/pgvector:pg16
     container_name: finance_tracker_postgres
     restart: unless-stopped
     env_file:
       - .env
-    ports:
-      - "${POSTGRES_PORT:-5432}:5432"
-    labels:
-      - "project=finance_tracker"
-      - "environment=production"
-      - "service=postgres"
-      - postgres_data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-
-  # celery:
-  #   build: .
-  #   container_name: finance_tracker_celery_dev
-  #   restart: unless-stopped
-  #   command: celery -A finance_tracker worker --loglevel=info
-  #   env_file:
-  #     - .env
-  #   environment:
-  #     - DEBUG=False
-  #     - POSTGRES_HOST=postgres
-  #     - POSTGRES_PORT=5432
-  #     - CELERY_BROKER_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
-  #     - CELERY_RESULT_BACKEND=redis://:${REDIS_PASSWORD}@redis:6379/0
-  #   volumes:
-  #     - ./media:/app/media
-  #   depends_on:
-  #     - postgres
-  #     - redis
-  #   labels:
-  #     - "project=finance-tracker"
-  #     - "environment=development"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    labels:
+      - "project=finance-tracker"
+      - "environment=production"
+      - "service=postgres"
 
   redis:
     image: redis:7-alpine
-    container_name: redis_finance_tracker
+    container_name: finance_tracker_redis
     restart: unless-stopped
     env_file:
       - .env
-    ports:
-      - "${REDIS_PORT:-6379}:6379"
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD}
     volumes:
       - redis_data:/data
-    command: redis-server --requirepass ${REDIS_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$${REDIS_PASSWORD}\" ping | grep PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    labels:
+      - "project=finance-tracker"
+      - "environment=production"
+      - "service=redis"
 
 volumes:
   postgres_data:
   redis_data:
+  media_data:
+  staticfiles_data:

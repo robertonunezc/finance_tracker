@@ -39,7 +39,7 @@ RUN chmod +x /app/entrypoint.sh
 RUN mkdir -p /app/staticfiles
 
 # Expose port
-EXPOSE 80
+EXPOSE 8000
 
 # Run the application
 CMD ["/app/entrypoint.sh"]

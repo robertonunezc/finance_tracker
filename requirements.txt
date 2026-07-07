@@ -1,5 +1,6 @@
 django==6.0
 uvicorn
+gunicorn
 boto3
 python-multipart
 python-dotenv
