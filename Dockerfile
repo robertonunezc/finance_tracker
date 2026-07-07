@@ -15,8 +15,6 @@ RUN apt-get update \
         tesseract-ocr-eng \
         tesseract-ocr-spa \
         libtesseract-dev \
-        libgl1 \
-        libglib2.0-0 \
         gcc \
         python3-dev \
         libpq-dev \

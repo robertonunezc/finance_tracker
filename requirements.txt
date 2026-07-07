@@ -8,12 +8,10 @@ python-telegram-bot
 requests
 pytest
 python-jose[cryptography]
-tesseract
 pytesseract
 django-ocr
 Pillow
-opencv-python
-paddleocr
+opencv-python-headless
 numpy
 setuptools
 openai
