@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+
+{% block title %}Finance Tracker{% endblock %}
+{% block home_nav_class %}active{% endblock %}
+
+{% block content %}
+<section class="home-hero mx-auto">
+  <p class="eyebrow mb-2">Finance Tracker</p>
+  <h1 class="display-5 fw-bold mb-3">Understand your spending.</h1>
+  <p class="lead text-secondary mb-4">Explore your receipt data through focused, fast reports.</p>
+  <a class="btn btn-primary btn-lg" href="{% url 'reports:category-spending' %}">View category report</a>
+</section>
+
+<section class="row g-4 mt-4" aria-label="Available features">
+  <div class="col-12 col-md-6 col-xl-4">
+    <div class="card app-card border-0 h-100">
+      <div class="card-body p-4">
+        <span class="feature-icon mb-3">%</span>
+        <h2 class="h5">Spending by category</h2>
+        <p class="text-secondary">Compare spending across categories using daily, weekly, monthly, or custom ranges.</p>
+        <a href="{% url 'reports:category-spending' %}" class="stretched-link text-decoration-none">Open report</a>
+      </div>
+    </div>
+  </div>
+</section>
+{% endblock %}

@@ -1,0 +1,11 @@
+:root { --ink:#18212f; --surface:#f5f7fb; --brand:#3d5afe; }
+body { background:var(--surface); color:var(--ink); min-height:100vh; }
+.app-navbar { background:#111827; box-shadow:0 4px 20px rgba(17,24,39,.12); }
+.app-navbar .nav-link { border-radius:.5rem; padding:.45rem .8rem!important; }
+.app-navbar .nav-link.active { background:rgba(255,255,255,.12); }
+.brand-mark { align-items:center; background:var(--brand); border-radius:.55rem; display:inline-flex; font-size:.75rem; height:2rem; justify-content:center; margin-right:.45rem; width:2rem; }
+.app-shell { max-width:1440px; }
+.app-card { border-radius:1rem; box-shadow:0 10px 35px rgba(17,24,39,.06); }
+.eyebrow { color:var(--brand); font-size:.72rem; font-weight:800; letter-spacing:.13em; text-transform:uppercase; }
+.home-hero { padding:clamp(2rem,8vw,7rem) 0 2rem; text-align:center; }
+.feature-icon { align-items:center; background:#eef0ff; border-radius:.75rem; color:var(--brand); display:flex; font-size:1.1rem; font-weight:800; height:2.75rem; justify-content:center; width:2.75rem; }
