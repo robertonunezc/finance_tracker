@@ -3,11 +3,13 @@ version: '3.8'
 x-app-environment: &app-environment
   DEBUG: ${DEBUG:-False}
   ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1}
-  POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+  DJANGO_DB_HOST: postgres
+  DJANGO_DB_PORT: "5432"
+  POSTGRES_HOST: postgres
   POSTGRES_DB: ${POSTGRES_DB:-finance_tracker_db}
   POSTGRES_USER: ${POSTGRES_USER:-finance_tracker_user}
   POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-finance_tracker_password}
-  POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+  POSTGRES_PORT: "5432"
   CELERY_BROKER_URL: "redis://:${REDIS_PASSWORD}@redis:6379/0"
   CELERY_RESULT_BACKEND: "redis://:${REDIS_PASSWORD}@redis:6379/0"
 

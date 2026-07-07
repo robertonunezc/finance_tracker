@@ -3,8 +3,8 @@
 set -e
 
 echo "Waiting for database..."
-DB_HOST=${POSTGRES_HOST:-postgres}
-DB_PORT=${POSTGRES_PORT:-5432}
+DB_HOST=${DJANGO_DB_HOST:-${POSTGRES_HOST:-postgres}}
+DB_PORT=${DJANGO_DB_PORT:-${POSTGRES_PORT:-5432}}
 echo "Waiting for database at ${DB_HOST}:${DB_PORT}..."
 while ! nc -z "$DB_HOST" "$DB_PORT"; do
     sleep 1

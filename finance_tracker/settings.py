@@ -104,8 +104,8 @@ DATABASES = {
         'NAME': os.environ.get('POSTGRES_DB', 'finance_tracker'),
         'USER': os.environ.get('POSTGRES_USER', 'user'),
         'PASSWORD': os.environ.get('POSTGRES_PASSWORD', 'password'),
-        'HOST': os.environ.get('POSTGRES_HOST', 'localhost'),
-        'PORT': os.environ.get('POSTGRES_PORT', '5432'),
+        'HOST': os.environ.get('DJANGO_DB_HOST', os.environ.get('POSTGRES_HOST', 'localhost')),
+        'PORT': os.environ.get('DJANGO_DB_PORT', os.environ.get('POSTGRES_PORT', '5432')),
     }
 }
 
