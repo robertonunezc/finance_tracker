@@ -17,6 +17,7 @@ Extract all readable text from this grocery receipt and structure it as Ticket o
 The tickets are from Mexico so are in spanish. 
 The quantity data can be in a column with names like: CANT, CANTIDAD. If you can not extract the quantity, return 1 by default for all the items
 Always extract the raw name, do not halluciante or correct it, just use what it says in the receipt
+Try to extract the subtotal, discount, store name and total amount if possible. If you can not find them, return null for those fields
 Return ONLY valid JSON, no markdown formatting.
 """
 
@@ -28,6 +29,9 @@ class Item(BaseModel):
 
 class Ticket(BaseModel):
     items: List[Item] = Field(description="List of items found in the ticket")
+    subtotal: float = Field(description="Subtotal amount of the ticket")
+    discount: float = Field(description="Discount amount of the ticket")
+    store_name: str = Field(description="Name of the store where the ticket was issued")
     total: float = Field(description="Total amount of the ticket")
 
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
