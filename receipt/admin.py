@@ -15,8 +15,8 @@ class ReceiptItemInline(admin.TabularInline):
 
 class ReceiptAdmin(admin.ModelAdmin):
     inlines = [ReceiptItemInline]
-    list_display = ('receipt_id', 'user_id', 'purchase_date', 'total_amount', 'status', 'created_at', 'updated_at')
-    list_filter = ('status', 'purchase_date', 'created_at')
+    list_display = ('receipt_id', 'user_id', 'purchase_date', 'total_amount', 'subtotal_amount', 'discount_amount', 'store_name', 'status', 'created_at', 'updated_at')
+    list_filter = ('status','store_name', 'purchase_date', 'created_at')
     search_fields = ('receipt_id', 'user_id')
 
 
