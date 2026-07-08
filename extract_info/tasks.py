@@ -67,6 +67,9 @@ def process_file_task(self, receipt_id: str, file_path: str, chat_id: int, file_
             receipt_id,
             purchase_date=timezone.now(),
             total_amount=Decimal(str(total_amount)),
+            subtotal_amount=Decimal(str(ticket.subtotal)) if hasattr(ticket, 'subtotal') else None,
+            discount_amount=Decimal(str(ticket.discount)) if hasattr(ticket, 'discount') else None,
+            store_name=ticket.store_name if hasattr(ticket, 'store_name') else None,
             items=items,
             status='completed'
         )
