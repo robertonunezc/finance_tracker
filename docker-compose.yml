@@ -22,8 +22,8 @@ x-app-service: &app-service
   environment:
     <<: *app-environment
   volumes:
-    - media_data:/app/media
-    - staticfiles_data:/app/staticfiles
+    - ./media:/app/media
+    - ./staticfiles:/app/staticfiles
   depends_on:
     postgres:
       condition: service_healthy
