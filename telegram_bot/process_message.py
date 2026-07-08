@@ -216,4 +216,4 @@ async def process_voice_message(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 async def process_bank_statement(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Processing your PDF bank statement... 🏦")
+    await update.message.reply_text("Not enabled yet. 🏦")
