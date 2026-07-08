@@ -46,7 +46,9 @@ ALLOWED_HOSTS = [
     if host.strip()
 ]
 
-
+CSRF_TRUSTED_ORIGINS = [
+    "https://finance.robertico.casa",
+]
 # Application definition
 
 INSTALLED_APPS = [
