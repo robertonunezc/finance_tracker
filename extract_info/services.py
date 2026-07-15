@@ -6,7 +6,7 @@ import asyncio
 import json
 from typing import List
 from pydantic import BaseModel, Field, ValidationError
-from receipt.models import ReceiptItem
+from receipt.models import ReceiptItem, Category
 from receipt import services as receipt_services
 
 # Configure logging
@@ -94,6 +94,18 @@ def categorize_item(item:str)->str:
     Categorize an item using OpenAI.
     """
     logger.info(f"Categorizing item: {item}")
+
+    category_options = [f"{value} ({label})" for value, label in Category.choices]
+    categories_str = ", ".join(category_options)
+    category_lookup = {
+        value.lower(): value
+        for value, _ in Category.choices
+    }
+    category_lookup.update({
+        label.lower(): value
+        for value, label in Category.choices
+    })
+
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
@@ -102,16 +114,18 @@ def categorize_item(item:str)->str:
             "content": [
                 {
                     "type": "text",
-                    "text": f"Categorize this item {item} as one of the following categories: groceries, beverages, dairy, produce, meat, bakery, frozen, pantry, snacks, medication, health, personal_care, toiletries, household, cleaning, paper_products, pet_supplies, baby_products, electronics, restaurant, clothing, school_supplies, transportation, entertainment, utilities, gas, taxes, other. "
-                    "Items will be in spanish"
-                    "Do not return any additional text, just the category name."
-                    "If you dont know the category, return 'other'"
+                    "text": f"Categorize this item '{item}' as one of the following categories: {categories_str}. "
+                    "Items will be in Spanish. "
+                    "Return ONLY the exact category key, not the full label. "
+                    "If you don't know the category, return 'other'."
                 }
             ]
         }
     ])
-    category = response.choices[0].message.content
-    logger.info(f"GPT categorization successful {category}")
+
+    raw_category = response.choices[0].message.content.strip().strip("'\"")
+    category = category_lookup.get(raw_category.lower(), "other")
+    logger.info(f"GPT categorization successful: {category}")
     return category
 
 def extract_bank_statement_text(pdf_path:str):
