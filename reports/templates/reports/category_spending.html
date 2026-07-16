@@ -66,7 +66,19 @@
         <div class="table-responsive">
           <table class="table report-table align-middle mb-0">
             <thead><tr><th>Category</th><th class="text-end">Share</th><th class="text-end">Amount</th></tr></thead>
-            <tbody>{% for row in report.rows %}<tr><td><span class="category-dot dot-{{ forloop.counter0 }}"></span>{{ row.label }}</td><td class="text-end text-secondary">{{ row.percentage|floatformat:1 }}%</td><td class="text-end fw-semibold">${{ row.total|floatformat:2|intcomma }}</td></tr>{% endfor %}</tbody>
+            <tbody>
+              {% for row in report.rows %}
+                <tr>
+                  <td>
+                    <a class="category-breakdown-link" href="{% url 'reports:receipt-items' %}?category={{ row.category|urlencode }}&start_date={{ report.start_date|date:'Y-m-d' }}&end_date={{ report.end_date|date:'Y-m-d' }}">
+                      <span class="category-dot dot-{{ forloop.counter0 }}"></span>{{ row.label }}
+                    </a>
+                  </td>
+                  <td class="text-end text-secondary">{{ row.percentage|floatformat:1 }}%</td>
+                  <td class="text-end fw-semibold">${{ row.total|floatformat:2|intcomma }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
           </table>
         </div>
         {% else %}<div class="px-4 pb-4 text-secondary">No categories to display.</div>{% endif %}

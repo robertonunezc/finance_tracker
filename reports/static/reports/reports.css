@@ -7,6 +7,8 @@
 .report-table th { border-top:1px solid #edf0f4; color:var(--muted); font-size:.7rem; letter-spacing:.07em; padding:1rem; text-transform:uppercase; }
 .report-table td { border-color:#edf0f4; padding:1rem; }
 .category-dot { background:var(--brand); border-radius:50%; display:inline-block; height:.65rem; margin-right:.65rem; width:.65rem; }
+.category-breakdown-link { align-items:center; color:inherit; display:inline-flex; font-weight:600; text-decoration:none; }
+.category-breakdown-link:hover, .category-breakdown-link:focus { color:var(--brand); text-decoration:underline; text-underline-offset:.2rem; }
 .dot-1{background:#00a896}.dot-2{background:#ffb703}.dot-3{background:#ef476f}.dot-4{background:#8338ec}.dot-5{background:#fb8500}.dot-6{background:#118ab2}.dot-7{background:#6c757d}
 .item-report-table td:first-child { min-width:14rem; }
 .item-report-table td:nth-child(3) { min-width:10rem; }
