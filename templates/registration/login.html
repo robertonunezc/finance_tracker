@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+
+{% block title %}Log in | Finance Tracker{% endblock %}
+
+{% block content %}
+<section class="auth-panel mx-auto">
+  <div class="text-center mb-4">
+    <p class="eyebrow mb-2">Finance Tracker</p>
+    <h1 class="h3 fw-bold mb-2">Log in</h1>
+    <p class="text-secondary mb-0">Use your Django account to continue.</p>
+  </div>
+
+  <div class="card border-0">
+    <div class="card-body p-4">
+      {% if form.non_field_errors %}
+      <div class="alert alert-danger" role="alert">
+        {% for error in form.non_field_errors %}{{ error }}{% endfor %}
+      </div>
+      {% endif %}
+
+      <form method="post" action="{% url 'login' %}">
+        {% csrf_token %}
+        <input type="hidden" name="next" value="{{ next }}">
+
+        <div class="mb-3">
+          <label class="form-label fw-semibold" for="{{ form.username.id_for_label }}">Username</label>
+          <input
+            autofocus
+            class="form-control {% if form.username.errors %}is-invalid{% endif %}"
+            id="{{ form.username.id_for_label }}"
+            name="{{ form.username.html_name }}"
+            type="text"
+            value="{{ form.username.value|default_if_none:'' }}"
+            autocomplete="username"
+            required
+          >
+          {% for error in form.username.errors %}<div class="invalid-feedback">{{ error }}</div>{% endfor %}
+        </div>
+
+        <div class="mb-4">
+          <label class="form-label fw-semibold" for="{{ form.password.id_for_label }}">Password</label>
+          <input
+            class="form-control {% if form.password.errors %}is-invalid{% endif %}"
+            id="{{ form.password.id_for_label }}"
+            name="{{ form.password.html_name }}"
+            type="password"
+            autocomplete="current-password"
+            required
+          >
+          {% for error in form.password.errors %}<div class="invalid-feedback">{{ error }}</div>{% endfor %}
+        </div>
+
+        <button class="btn btn-primary w-100" type="submit">Log in</button>
+      </form>
+    </div>
+  </div>
+</section>
+{% endblock %}

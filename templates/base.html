@@ -19,7 +19,8 @@
         <span class="navbar-toggler-icon"></span>
       </button>
       <div class="collapse navbar-collapse" id="appMenu">
-        <ul class="navbar-nav ms-auto gap-lg-2">
+        <ul class="navbar-nav ms-auto gap-lg-2 align-items-lg-center">
+          {% if user.is_authenticated %}
           <li class="nav-item">
             <a class="nav-link {% block home_nav_class %}{% endblock %}" href="{% url 'home' %}">Home</a>
           </li>
@@ -30,6 +31,14 @@
             </ul>
           </li>
           {% block navigation_items %}{% endblock %}
+          <li class="nav-item text-white-50 small px-lg-2">{{ user.get_username }}</li>
+          <li class="nav-item">
+            <form method="post" action="{% url 'logout' %}">
+              {% csrf_token %}
+              <button class="nav-link nav-button" type="submit">Log out</button>
+            </form>
+          </li>
+          {% endif %}
         </ul>
       </div>
     </div>

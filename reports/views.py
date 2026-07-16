@@ -1,8 +1,10 @@
+from django.contrib.auth.decorators import login_required
 from django.shortcuts import render
 
 from reports.services import CategorySpendingService
 
 
+@login_required
 def category_spending(request):
     """Render category spending using the report service for all business logic."""
     report = CategorySpendingService.build_report(request.GET)

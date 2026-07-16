@@ -1,6 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
 
+from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
@@ -88,14 +89,69 @@ class CategorySpendingServiceTests(TestCase):
 
 
 class CategorySpendingViewTests(TestCase):
-    def test_report_page_renders(self):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(
+            username="report-user",
+            password="correct-horse-battery-staple",
+        )
+
+    def test_anonymous_home_redirects_to_login(self):
+        response = self.client.get(reverse("home"))
+        self.assertRedirects(
+            response,
+            f"{reverse('login')}?next={reverse('home')}",
+            fetch_redirect_response=False,
+        )
+
+    def test_anonymous_report_redirects_to_login(self):
+        response = self.client.get(reverse("reports:category-spending"))
+        self.assertRedirects(
+            response,
+            f"{reverse('login')}?next={reverse('reports:category-spending')}",
+            fetch_redirect_response=False,
+        )
+
+    def test_authenticated_report_page_renders(self):
+        self.client.force_login(self.user)
         response = self.client.get(reverse("reports:category-spending"))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Where your money went")
         self.assertTemplateUsed(response, "base.html")
 
-    def test_home_page_links_to_category_report(self):
+    def test_authenticated_home_page_links_to_category_report(self):
+        self.client.force_login(self.user)
         response = self.client.get(reverse("home"))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, reverse("reports:category-spending"))
         self.assertTemplateUsed(response, "base.html")
+
+    def test_login_redirects_to_next_for_valid_credentials(self):
+        response = self.client.post(
+            reverse("login"),
+            {
+                "username": "report-user",
+                "password": "correct-horse-battery-staple",
+                "next": reverse("reports:category-spending"),
+            },
+        )
+        self.assertRedirects(
+            response,
+            reverse("reports:category-spending"),
+            fetch_redirect_response=False,
+        )
+
+    def test_login_rerenders_errors_for_invalid_credentials(self):
+        response = self.client.post(
+            reverse("login"),
+            {
+                "username": "report-user",
+                "password": "wrong-password",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Please enter a correct username and password")
+
+    def test_logout_redirects_to_login(self):
+        self.client.force_login(self.user)
+        response = self.client.post(reverse("logout"))
+        self.assertRedirects(response, reverse("login"), fetch_redirect_response=False)
