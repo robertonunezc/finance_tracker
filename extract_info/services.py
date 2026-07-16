@@ -1,23 +1,32 @@
-from openai import OpenAI
-import os
-from dotenv import load_dotenv
-import logging
-import asyncio
+import base64
 import json
+import logging
+import os
+import re
 from typing import List
+
+from dotenv import load_dotenv
+from openai import OpenAI
 from pydantic import BaseModel, Field, ValidationError
-from receipt.models import ReceiptItem, Category
+
 from receipt import services as receipt_services
+from receipt.models import Category, ReceiptItem
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 EXTRACTION_PROMPT="""
-Extract all readable text from this grocery receipt and structure it as Ticket object
-The tickets are from Mexico so are in spanish. 
-The quantity data can be in a column with names like: CANT, CANTIDAD. If you can not extract the quantity, return 1 by default for all the items
-Always extract the raw name, do not halluciante or correct it, just use what it says in the receipt
-Try to extract the subtotal, discount, store name and total amount if possible. If you can not find them, return null for those fields
+Extract all readable text from this grocery receipt and structure it as Ticket object.
+The tickets are from Mexico so are in Spanish.
+The quantity data can be in a column with names like: CANT, CANTIDAD. If you cannot extract the quantity, return 1 by default for all the items.
+Always extract the raw item name, do not hallucinate or correct it; use exactly what appears on the receipt.
+For the store name, prefer the canonical commercial name that appears on the receipt. If the receipt includes legal suffixes such as SA DE CV, S.A. DE C.V., S.A. DE C.V, SOCIEDAD ANONIMA, or similar, normalize them away in the final store_name value.
+Examples:
+- "TIENDAS CHEDRAUI SA DE CV" -> "chedraui"
+- "Soriana S.A. de C.V." -> "soriana"
+- "Walmart de México S.A. de C.V." -> "walmart"
+If the store name is unclear, return null.
+Try to extract the subtotal, discount, store name and total amount if possible. If you cannot find them, return null for those fields.
 Return ONLY valid JSON, no markdown formatting.
 """
 
@@ -35,7 +44,37 @@ class Ticket(BaseModel):
     total: float = Field(description="Total amount of the ticket")
 
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-import base64
+
+
+def normalize_store_name(value: str | None) -> str | None:
+    if not value:
+        return None
+
+    cleaned = re.sub(r"\s+", " ", value).strip().lower()
+    if not cleaned:
+        return None
+
+    cleaned = cleaned.replace("&", " and ")
+    cleaned = re.sub(r"\b(?:s\.a\.?|sa|sociedad anonima|sociedad anonima|de|del|la|los|las)\b", " ", cleaned)
+    cleaned = re.sub(r"\b(?:cv|c\.v\.?|s\.a\.? de c\.v\.?|sa de cv|s\.a\. de c\.v|s\.a\. de c\.v\.)\b", " ", cleaned)
+    cleaned = re.sub(r"[^a-z0-9]+", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+
+    if not cleaned:
+        return None
+
+    aliases = {
+        "tiendas chedraui": "chedraui",
+        "chedraui": "chedraui",
+        "soriana": "soriana",
+        "walmart": "walmart",
+        "bodega aurrera": "bodega aurrera",
+        "superama": "superama",
+        "farmacias del ahorro": "farmacias del ahorro",
+    }
+
+    return aliases.get(cleaned, cleaned)
+
 
 # Set your API key
 
@@ -72,6 +111,10 @@ def extract_receipt_text(image_path:str)->Ticket:
         parsed_ticket = response.choices[0].message.parsed
         if parsed_ticket is None:
             raise ValueError(f"Model refused: {response.choices[0].message.refusal}")
+
+        if getattr(parsed_ticket, "store_name", None):
+            parsed_ticket.store_name = normalize_store_name(parsed_ticket.store_name)
+
         logger.info(f"GPT extraction successful")
         return parsed_ticket
     except (ValidationError, json.JSONDecodeError, ValueError) as e:
@@ -169,6 +212,9 @@ def transcribe_and_extract_text(audio_path:str):
         parsed_ticket = response.choices[0].message.parsed
         if parsed_ticket is None:
             raise ValueError(f"Model refused: {response.choices[0].message.refusal}")
+
+        if getattr(parsed_ticket, "store_name", None):
+            parsed_ticket.store_name = normalize_store_name(parsed_ticket.store_name)
         
         logger.info(f"Extraction successful: {len(parsed_ticket.items)} items found")
         return parsed_ticket
