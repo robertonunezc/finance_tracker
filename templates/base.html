@@ -27,6 +27,7 @@
             <a class="nav-link dropdown-toggle {% block reports_nav_class %}{% endblock %}" href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">Reports</a>
             <ul class="dropdown-menu dropdown-menu-end">
               <li><a class="dropdown-item" href="{% url 'reports:category-spending' %}">Spending by category</a></li>
+              <li><a class="dropdown-item" href="{% url 'reports:receipt-items' %}">Receipt items</a></li>
             </ul>
           </li>
           {% block navigation_items %}{% endblock %}
