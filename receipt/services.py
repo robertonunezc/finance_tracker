@@ -1,9 +1,62 @@
+import hashlib
+
 from .models import Receipt, ReceiptItem
 from typing import List, Optional
-from datetime import datetime
 from decimal import Decimal
-from .dataclasses import ReceiptData
+from django.db import IntegrityError, transaction
+from django.utils import timezone
+from .dataclasses import ReceiptData, ReceiptLookupResult
 from pgvector.django import CosineDistance
+
+
+def _receipt_to_lookup_result(receipt: Receipt, created: bool = False) -> ReceiptLookupResult:
+    return ReceiptLookupResult(
+        receipt_id=str(receipt.receipt_id),
+        user_id=receipt.user_id,
+        image_url=receipt.image_url,
+        status=receipt.status,
+        created=created,
+        file_hash=receipt.file_hash,
+    )
+
+
+def compute_file_sha256(file_path: str) -> str:
+    digest = hashlib.sha256()
+    with open(file_path, "rb") as file_obj:
+        for chunk in iter(lambda: file_obj.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def get_receipt_by_user_and_file_hash(user_id: str, file_hash: str) -> Optional[ReceiptLookupResult]:
+    if not file_hash:
+        return None
+
+    try:
+        receipt = Receipt.objects.get(user_id=user_id, file_hash=file_hash)
+    except Receipt.DoesNotExist:
+        return None
+
+    return _receipt_to_lookup_result(receipt, created=False)
+
+
+def create_receipt_with_file_hash(receipt_data: ReceiptData, file_hash: str) -> ReceiptLookupResult:
+    try:
+        with transaction.atomic():
+            receipt = Receipt.objects.create(
+                user_id=receipt_data.user_id,
+                file_hash=file_hash,
+                purchase_date=receipt_data.purchase_date or timezone.now(),
+                total_amount=receipt_data.total_amount or Decimal(0.0),
+                image_url=receipt_data.image_url,
+                status=receipt_data.status or 'pending'
+            )
+        return _receipt_to_lookup_result(receipt, created=True)
+    except IntegrityError:
+        existing_receipt = get_receipt_by_user_and_file_hash(receipt_data.user_id, file_hash)
+        if existing_receipt is None:
+            raise
+        return existing_receipt
 
 def create_receipt(receipt_data: ReceiptData) -> ReceiptData:
     """
@@ -17,7 +70,7 @@ def create_receipt(receipt_data: ReceiptData) -> ReceiptData:
     """
     receipt = Receipt.objects.create(
         user_id=receipt_data.user_id,
-        purchase_date=receipt_data.purchase_date or datetime.now(),
+        purchase_date=receipt_data.purchase_date or timezone.now(),
         total_amount=receipt_data.total_amount or Decimal(0.0),
         image_url=receipt_data.image_url,
         status=receipt_data.status or 'pending'
@@ -127,4 +180,4 @@ def list_receipts_by_user(user_id: str) -> List[ReceiptData]:
 def get_closest_match_receipt_item(item_name: str,  new_vector: List[float]) -> Optional[ReceiptItem]:
     return ReceiptItem.objects.annotate(
         distance=CosineDistance('embedding', new_vector)
-    ).order_by('distance').first() 
+    ).order_by('distance').first()

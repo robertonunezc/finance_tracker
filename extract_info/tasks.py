@@ -15,6 +15,17 @@ logger = logging.getLogger(__name__)
 import tempfile
 from handle_files.services.upload import UploadServiceFactory
 
+
+def mark_receipt_failed(receipt_id: str, bot_token: str | None = None, chat_id: int | None = None) -> None:
+    receipt_services.update_receipt(receipt_id, status='failed')
+    if bot_token and chat_id:
+        bot = Bot(token=bot_token)
+        asyncio.run(bot.send_message(
+            chat_id=chat_id,
+            text=f"❌ Failed to process receipt {receipt_id}. Please try again."
+        ))
+
+
 @shared_task(bind=True, max_retries=3, autoretry_for=(Exception,), retry_backoff=True)
 def process_file_task(self, receipt_id: str, file_path: str, chat_id: int, file_type: str):
     """
@@ -103,15 +114,8 @@ def process_file_task(self, receipt_id: str, file_path: str, chat_id: int, file_
         # If we exhausted retries, mark as error and notify user
         if self.request.retries >= self.max_retries:
             try:
-                receipt_services.update_receipt(receipt_id, status='error')
-                if bot_token and chat_id:
-                    bot = Bot(token=bot_token)
-                    asyncio.run(bot.send_message(
-                        chat_id=chat_id,
-                        text=f"❌ Failed to process receipt {receipt_id}. Please try again."
-                    ))
+                mark_receipt_failed(receipt_id, bot_token=bot_token, chat_id=chat_id)
             except Exception as inner_e:
-                logger.error(f"Failed to update error status for {receipt_id}: {inner_e}")
+                logger.error(f"Failed to update failed status for {receipt_id}: {inner_e}")
 
         raise
-
