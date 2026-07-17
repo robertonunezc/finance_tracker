@@ -1,0 +1,13 @@
+.review-summary { background:#fff; border:1px solid #e6e9ef; border-radius:.75rem; }
+.review-card { border-radius:1rem; box-shadow:0 10px 35px rgba(17,24,39,.06); }
+.review-table th { border-top:1px solid #edf0f4; color:#6b7280; font-size:.7rem; letter-spacing:.07em; padding:1rem; text-transform:uppercase; }
+.review-table td { border-color:#edf0f4; padding:1rem; vertical-align:middle; }
+.issue-pill { background:#fff1f2; border-radius:999px; color:#be123c; display:inline-flex; font-weight:700; min-width:2rem; padding:.2rem .65rem; justify-content:center; }
+.receipt-image { background:#f8fafc; border:1px solid #e6e9ef; border-radius:.75rem; max-height:34rem; object-fit:contain; width:100%; }
+.confidence-score { background:#eef0ff; border-radius:.6rem; color:var(--brand); display:inline-block; font-size:1.35rem; font-weight:800; margin-right:.5rem; min-width:4rem; padding:.35rem .55rem; text-align:center; }
+.issue-list { display:grid; gap:.75rem; }
+.issue-item { background:#fff7ed; border:1px solid #fed7aa; border-radius:.75rem; padding:.75rem; }
+.issue-item code { color:#9a3412; display:block; font-size:.8rem; margin-top:.35rem; white-space:normal; }
+.empty-state { align-items:center; display:flex; flex-direction:column; justify-content:center; min-height:340px; text-align:center; }
+.empty-icon { align-items:center; background:#eef0ff; border-radius:50%; color:var(--brand); display:flex; font-size:1.4rem; font-weight:800; height:4rem; justify-content:center; margin-bottom:1rem; width:4rem; }
+@media (max-width:575.98px) { .review-table th, .review-table td { padding:.75rem; } }

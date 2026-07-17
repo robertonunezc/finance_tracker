@@ -30,6 +30,11 @@
               <li><a class="dropdown-item" href="{% url 'reports:receipt-items' %}">Receipt items</a></li>
             </ul>
           </li>
+          {% if request.user.is_staff %}
+            <li class="nav-item">
+              <a class="nav-link {% block review_nav_class %}{% endblock %}" href="{% url 'receipt-review:queue' %}">Review</a>
+            </li>
+          {% endif %}
           {% block navigation_items %}{% endblock %}
         </ul>
       </div>

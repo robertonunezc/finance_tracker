@@ -3,6 +3,8 @@ import os
 import tempfile
 from decimal import Decimal
 
+from django.contrib.auth import get_user_model
+from django.urls import reverse
 from django.test import TestCase
 from django.utils import timezone
 
@@ -348,3 +350,65 @@ class ReceiptReviewCorrectionTests(TestCase):
         self.assertEqual(review.status, "approved")
         self.assertEqual(review.approved_by, "admin")
         self.assertIsNotNone(review.approved_at)
+
+
+class ReceiptReviewViewTests(TestCase):
+    def create_staff_user(self):
+        return get_user_model().objects.create_user(
+            username="staff",
+            password="password",
+            is_staff=True,
+        )
+
+    def create_regular_user(self):
+        return get_user_model().objects.create_user(
+            username="regular",
+            password="password",
+            is_staff=False,
+        )
+
+    def create_review_receipt(self):
+        return ReceiptReviewCorrectionTests().create_review_receipt()
+
+    def post_data(self):
+        return {
+            **ReceiptReviewCorrectionTests().post_data(price="1249.00"),
+            "action": "approve",
+        }
+
+    def test_queue_requires_login(self):
+        response = self.client.get(reverse("receipt-review:queue"))
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/admin/login/", response["Location"])
+
+    def test_queue_requires_staff(self):
+        self.client.force_login(self.create_regular_user())
+
+        response = self.client.get(reverse("receipt-review:queue"))
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/admin/login/", response["Location"])
+
+    def test_staff_can_load_review_queue(self):
+        self.create_review_receipt()
+        self.client.force_login(self.create_staff_user())
+
+        response = self.client.get(reverse("receipt-review:queue"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Receipt reviews")
+        self.assertContains(response, "AMZN MX MARKETPLACE")
+
+    def test_staff_can_approve_corrected_receipt(self):
+        receipt = self.create_review_receipt()
+        self.client.force_login(self.create_staff_user())
+
+        response = self.client.post(
+            reverse("receipt-review:detail", args=[receipt.receipt_id]),
+            self.post_data(),
+        )
+
+        receipt.refresh_from_db()
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(receipt.status, "completed")

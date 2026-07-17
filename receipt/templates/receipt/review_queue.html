@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% load humanize static %}
+
+{% block title %}Receipt reviews{% endblock %}
+{% block review_nav_class %}active{% endblock %}
+{% block styles %}<link rel="stylesheet" href="{% static 'receipt/review.css' %}">{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-column flex-lg-row align-items-lg-end justify-content-between gap-3 mb-4">
+  <div>
+    <p class="eyebrow mb-2">Manual review</p>
+    <h1 class="display-6 fw-bold mb-2">Receipt reviews</h1>
+    <p class="text-secondary mb-0">Receipts blocked by confidence or validation rules.</p>
+  </div>
+  <div class="review-summary px-3 py-2">
+    <span class="text-secondary small d-block">Open reviews</span>
+    <strong>{{ rows|length|intcomma }}</strong>
+  </div>
+</div>
+
+<section class="card review-card border-0">
+  <div class="card-body p-0">
+    {% if rows %}
+      <div class="table-responsive">
+        <table class="table review-table align-middle mb-0">
+          <thead>
+            <tr>
+              <th>Receipt</th>
+              <th>Store</th>
+              <th>First item</th>
+              <th class="text-end">Total</th>
+              <th class="text-end">Confidence</th>
+              <th class="text-end">Issues</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in rows %}
+              <tr>
+                <td>
+                  <div class="fw-semibold">{{ row.receipt.receipt_id }}</div>
+                  <div class="text-secondary small">{{ row.review.updated_at|naturaltime }}</div>
+                </td>
+                <td>{{ row.receipt.store_name|default:"Unknown store" }}</td>
+                <td>{{ row.first_item.name|default:"No items" }}</td>
+                <td class="text-end">${{ row.receipt.total_amount|floatformat:2|intcomma }}</td>
+                <td class="text-end">{{ row.review.overall_confidence|floatformat:2 }}</td>
+                <td class="text-end"><span class="issue-pill">{{ row.issue_count }}</span></td>
+                <td class="text-end">
+                  <a class="btn btn-dark btn-sm" href="{% url 'receipt-review:detail' row.receipt.receipt_id %}">Open</a>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="empty-state">
+        <div class="empty-icon">✓</div>
+        <h2 class="h5">No receipts need review</h2>
+        <p class="text-secondary mb-0">Low-confidence extractions will appear here.</p>
+      </div>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}
