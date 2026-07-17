@@ -3,7 +3,11 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any, Mapping
 
-from receipt.models import Category
+from django.db import transaction
+from django.utils import timezone
+
+from receipt.dataclasses import ReceiptItem as ReceiptItemData
+from receipt.models import Category, Receipt, ReceiptExtractionReview, ReceiptItem
 
 
 CONFIDENCE_THRESHOLD = 0.80
@@ -18,6 +22,14 @@ class ValidationResult:
     @property
     def requires_review(self) -> bool:
         return any(issue.get("severity") == "blocking" for issue in self.issues)
+
+
+@dataclass(frozen=True)
+class ExtractionApplicationResult:
+    status: str
+    total_amount: Decimal
+    item_count: int
+    validation: ValidationResult
 
 
 def parse_amounts_from_source_text(source_text: str) -> list[Decimal]:
@@ -55,6 +67,86 @@ def validate_receipt_extraction(payload: Mapping[str, Any]) -> ValidationResult:
         overall_confidence=max(0.0, round(float(overall_confidence), 4)),
         issues=issues,
     )
+
+
+def build_extraction_payload(ticket: Any, items: list[ReceiptItemData] | None = None) -> dict[str, Any]:
+    if isinstance(ticket, Mapping):
+        payload = _json_safe(ticket)
+    elif hasattr(ticket, "model_dump"):
+        payload = ticket.model_dump(mode="json")
+    else:
+        payload = {
+            "store_name": _coerce_field(getattr(ticket, "store_name", None)),
+            "subtotal": _coerce_field(getattr(ticket, "subtotal", None)),
+            "discount": _coerce_field(getattr(ticket, "discount", None)),
+            "total": _coerce_field(getattr(ticket, "total", None)),
+            "items": [
+                {
+                    "name": _coerce_field(getattr(item, "name", None)),
+                    "price": _coerce_field(getattr(item, "price", None)),
+                    "quantity": _coerce_field(getattr(item, "quantity", 1)),
+                    "category": _coerce_field(getattr(item, "category", Category.OTHER)),
+                }
+                for item in getattr(ticket, "items", []) or []
+            ],
+        }
+
+    if items:
+        payload_items = payload.setdefault("items", [])
+        for index, item in enumerate(items):
+            if index >= len(payload_items):
+                payload_items.append({})
+            payload_items[index].setdefault("name", _coerce_field(item.name))
+            payload_items[index].setdefault("price", _coerce_field(item.price))
+            payload_items[index].setdefault("quantity", _coerce_field(item.quantity or 1))
+            payload_items[index]["category"] = _merge_field_value(
+                payload_items[index].get("category"),
+                item.category or Category.OTHER,
+            )
+
+    return payload
+
+
+def apply_extraction_result(
+    receipt_id: str,
+    ticket: Any,
+    items: list[ReceiptItemData] | None,
+) -> ExtractionApplicationResult:
+    payload = build_extraction_payload(ticket, items)
+    validation = validate_receipt_extraction(payload)
+    status = "needs_review" if validation.requires_review else "completed"
+    total_amount = _field_decimal(payload.get("total")) or Decimal("0.00")
+
+    with transaction.atomic():
+        receipt = Receipt.objects.select_for_update().get(receipt_id=receipt_id)
+        _save_receipt_values(receipt, payload, status, validation)
+        _replace_receipt_items(receipt, payload, items)
+
+        if validation.requires_review:
+            ReceiptExtractionReview.objects.update_or_create(
+                receipt=receipt,
+                defaults={
+                    "status": "needs_review",
+                    "overall_confidence": validation.overall_confidence,
+                    "issues": validation.issues,
+                    "raw_extraction": payload,
+                    "approved_by": None,
+                    "approved_at": None,
+                },
+            )
+        else:
+            ReceiptExtractionReview.objects.filter(receipt=receipt).delete()
+
+    return ExtractionApplicationResult(
+        status=status,
+        total_amount=total_amount,
+        item_count=len(items or payload.get("items") or []),
+        validation=validation,
+    )
+
+
+def field_value(field: Any) -> Any:
+    return _field_raw_value(field)
 
 
 def _validate_required_receipt_fields(payload: Mapping[str, Any], issues: list[dict[str, Any]]) -> None:
@@ -198,12 +290,16 @@ def _validate_item_sum(payload: Mapping[str, Any], issues: list[dict[str, Any]])
 def _field_raw_value(field: Any) -> Any:
     if isinstance(field, Mapping):
         return field.get("value")
+    if hasattr(field, "value"):
+        return getattr(field, "value")
     return field
 
 
 def _field_source(field: Any) -> str:
     if isinstance(field, Mapping):
         return str(field.get("source_text") or "")
+    if hasattr(field, "source_text"):
+        return str(getattr(field, "source_text") or "")
     return ""
 
 
@@ -233,3 +329,100 @@ def _issue(
         "extracted_value": "" if extracted_value is None else str(extracted_value),
         "source_text": source_text,
     }
+
+
+def _save_receipt_values(
+    receipt: Receipt,
+    payload: Mapping[str, Any],
+    status: str,
+    validation: ValidationResult,
+) -> None:
+    receipt.purchase_date = timezone.now()
+    receipt.total_amount = _field_decimal(payload.get("total")) or Decimal("0.00")
+    receipt.subtotal_amount = _field_decimal(payload.get("subtotal"))
+    receipt.discount_amount = _field_decimal(payload.get("discount"))
+    receipt.store_name = _field_raw_value(payload.get("store_name")) or None
+    receipt.status = status
+    receipt.extraction_result = {
+        "raw_extraction": payload,
+        "validation": {
+            "overall_confidence": validation.overall_confidence,
+            "requires_review": validation.requires_review,
+            "issues": validation.issues,
+        },
+    }
+    receipt.save(
+        update_fields=[
+            "purchase_date",
+            "total_amount",
+            "subtotal_amount",
+            "discount_amount",
+            "store_name",
+            "status",
+            "extraction_result",
+            "updated_at",
+        ]
+    )
+
+
+def _replace_receipt_items(
+    receipt: Receipt,
+    payload: Mapping[str, Any],
+    items: list[ReceiptItemData] | None,
+) -> None:
+    receipt.items.all().delete()
+    if items is None:
+        items = [_payload_item_to_dataclass(item) for item in payload.get("items") or []]
+
+    for item in items:
+        ReceiptItem.objects.create(
+            receipt=receipt,
+            name=item.name,
+            price=float(item.price),
+            quantity=int(item.quantity or 1),
+            category=item.category or Category.OTHER,
+            embedding=item.embedding,
+        )
+
+
+def _payload_item_to_dataclass(item: Mapping[str, Any]) -> ReceiptItemData:
+    return ReceiptItemData(
+        name=str(_field_raw_value(item.get("name")) or ""),
+        price=float(_field_decimal(item.get("price")) or Decimal("0.00")),
+        quantity=int(_field_decimal(item.get("quantity")) or Decimal("1")),
+        category=str(_field_raw_value(item.get("category")) or Category.OTHER),
+    )
+
+
+def _coerce_field(value: Any, confidence: float = 1.0) -> dict[str, Any]:
+    if isinstance(value, Mapping):
+        return _json_safe(value)
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json")
+    if hasattr(value, "value"):
+        return {
+            "value": _json_safe(getattr(value, "value")),
+            "source_text": str(getattr(value, "source_text", "") or ""),
+            "confidence": float(getattr(value, "confidence", confidence) or 0.0),
+        }
+    return {
+        "value": _json_safe(value),
+        "source_text": "" if value is None else str(value),
+        "confidence": confidence,
+    }
+
+
+def _merge_field_value(field: Any, value: Any) -> dict[str, Any]:
+    merged = _coerce_field(field)
+    merged["value"] = _json_safe(value)
+    return merged
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, Mapping):
+        return {key: _json_safe(inner_value) for key, inner_value in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    return value

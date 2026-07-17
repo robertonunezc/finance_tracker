@@ -3,7 +3,7 @@ import json
 import logging
 import os
 import re
-from typing import List
+from typing import List, Optional
 
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -27,21 +27,44 @@ Examples:
 - "Walmart de México S.A. de C.V." -> "walmart"
 If the store name is unclear, return null.
 Try to extract the subtotal, discount, store name and total amount if possible. If you cannot find them, return null for those fields.
+For every receipt-level field and every item field, return an object with:
+- value: the normalized extracted value
+- source_text: the exact visible text snippet used as evidence
+- confidence: a number from 0 to 1 indicating how confident you are
+Use lower confidence when the receipt image is blurry, the amount is ambiguous, the source text does not clearly support the value, or you are guessing.
 Return ONLY valid JSON, no markdown formatting.
 """
 
+class TextExtractionField(BaseModel):
+    value: Optional[str] = Field(description="Normalized extracted text value")
+    source_text: str = Field(default="", description="Exact source text used as evidence")
+    confidence: float = Field(description="Confidence score from 0 to 1")
+
+
+class AmountExtractionField(BaseModel):
+    value: Optional[float] = Field(description="Normalized numeric amount")
+    source_text: str = Field(default="", description="Exact source text used as evidence")
+    confidence: float = Field(description="Confidence score from 0 to 1")
+
+
+class IntegerExtractionField(BaseModel):
+    value: Optional[int] = Field(description="Normalized integer value")
+    source_text: str = Field(default="", description="Exact source text used as evidence")
+    confidence: float = Field(description="Confidence score from 0 to 1")
+
+
 class Item(BaseModel):
-    name: str = Field(description="Name of the item")
-    price: float = Field(description="Price of the item")
-    quantity: int = Field(description="Quantity of the item")
-    category: str = Field(description="Category of the item")
+    name: TextExtractionField = Field(description="Name of the item")
+    price: AmountExtractionField = Field(description="Price of the item")
+    quantity: IntegerExtractionField = Field(description="Quantity of the item")
+    category: TextExtractionField = Field(description="Category of the item")
 
 class Ticket(BaseModel):
     items: List[Item] = Field(description="List of items found in the ticket")
-    subtotal: float = Field(description="Subtotal amount of the ticket")
-    discount: float = Field(description="Discount amount of the ticket")
-    store_name: str = Field(description="Name of the store where the ticket was issued")
-    total: float = Field(description="Total amount of the ticket")
+    subtotal: Optional[AmountExtractionField] = Field(default=None, description="Subtotal amount of the ticket")
+    discount: Optional[AmountExtractionField] = Field(default=None, description="Discount amount of the ticket")
+    store_name: Optional[TextExtractionField] = Field(default=None, description="Name of the store where the ticket was issued")
+    total: Optional[AmountExtractionField] = Field(default=None, description="Total amount of the ticket")
 
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
@@ -112,8 +135,8 @@ def extract_receipt_text(image_path:str)->Ticket:
         if parsed_ticket is None:
             raise ValueError(f"Model refused: {response.choices[0].message.refusal}")
 
-        if getattr(parsed_ticket, "store_name", None):
-            parsed_ticket.store_name = normalize_store_name(parsed_ticket.store_name)
+        if getattr(parsed_ticket, "store_name", None) and parsed_ticket.store_name.value:
+            parsed_ticket.store_name.value = normalize_store_name(parsed_ticket.store_name.value)
 
         logger.info(f"GPT extraction successful")
         return parsed_ticket
@@ -213,8 +236,8 @@ def transcribe_and_extract_text(audio_path:str):
         if parsed_ticket is None:
             raise ValueError(f"Model refused: {response.choices[0].message.refusal}")
 
-        if getattr(parsed_ticket, "store_name", None):
-            parsed_ticket.store_name = normalize_store_name(parsed_ticket.store_name)
+        if getattr(parsed_ticket, "store_name", None) and parsed_ticket.store_name.value:
+            parsed_ticket.store_name.value = normalize_store_name(parsed_ticket.store_name.value)
         
         logger.info(f"Extraction successful: {len(parsed_ticket.items)} items found")
         return parsed_ticket

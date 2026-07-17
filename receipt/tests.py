@@ -7,8 +7,8 @@ from django.test import TestCase
 from django.utils import timezone
 
 from receipt import services as receipt_services
-from receipt.dataclasses import ReceiptData
-from receipt.models import Receipt
+from receipt.dataclasses import ReceiptData, ReceiptItem as ReceiptItemData
+from receipt.models import Receipt, ReceiptExtractionReview, ReceiptItem
 
 
 class ReceiptFileHashTests(TestCase):
@@ -211,3 +211,60 @@ class ReceiptExtractionValidationTests(TestCase):
         amounts = parse_amounts_from_source_text("AMZN MX MARKETPLACE  1,249.00")
 
         self.assertEqual(amounts, [Decimal("1249.00")])
+
+
+class ReceiptExtractionApplicationTests(TestCase):
+    def create_pending_receipt(self):
+        return Receipt.objects.create(
+            user_id="application-user",
+            purchase_date=timezone.now(),
+            total_amount=Decimal("0.00"),
+            image_url="receipt.jpg",
+            status="processing",
+        )
+
+    def valid_payload(self):
+        return ReceiptExtractionValidationTests().valid_payload()
+
+    def enriched_items(self):
+        return [
+            ReceiptItemData(
+                name="AMZN MX MARKETPLACE",
+                price=1249.00,
+                quantity=1,
+                category="electronics",
+            )
+        ]
+
+    def test_valid_extraction_marks_receipt_completed_without_review(self):
+        from receipt.extraction_review import apply_extraction_result
+
+        receipt = self.create_pending_receipt()
+
+        result = apply_extraction_result(str(receipt.receipt_id), self.valid_payload(), self.enriched_items())
+
+        receipt.refresh_from_db()
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(receipt.status, "completed")
+        self.assertEqual(receipt.total_amount, Decimal("1249.00"))
+        self.assertEqual(receipt.store_name, "amazon")
+        self.assertEqual(ReceiptItem.objects.filter(receipt=receipt).count(), 1)
+        self.assertFalse(ReceiptExtractionReview.objects.filter(receipt=receipt).exists())
+        self.assertEqual(receipt.extraction_result["validation"]["requires_review"], False)
+
+    def test_low_confidence_extraction_marks_receipt_needs_review(self):
+        from receipt.extraction_review import apply_extraction_result
+
+        receipt = self.create_pending_receipt()
+        payload = self.valid_payload()
+        payload["items"][0]["price"]["confidence"] = 0.62
+
+        result = apply_extraction_result(str(receipt.receipt_id), payload, self.enriched_items())
+
+        receipt.refresh_from_db()
+        review = ReceiptExtractionReview.objects.get(receipt=receipt)
+        self.assertEqual(result.status, "needs_review")
+        self.assertEqual(receipt.status, "needs_review")
+        self.assertEqual(review.status, "needs_review")
+        self.assertEqual(review.issues[0]["code"], "low_confidence")
+        self.assertEqual(review.raw_extraction["items"][0]["price"]["confidence"], 0.62)

@@ -2,19 +2,14 @@ from celery import shared_task
 import logging
 import os
 import asyncio
-from django.utils import timezone
-from decimal import Decimal
 from telegram import Bot
 
 from extract_info import services as extract_info_service
+from receipt import extraction_review
 from receipt import services as receipt_services
 from receipt.dataclasses import ReceiptItem as ReceiptItemData
 
 logger = logging.getLogger(__name__)
-
-import tempfile
-from handle_files.services.upload import UploadServiceFactory
-
 
 def mark_receipt_failed(receipt_id: str, bot_token: str | None = None, chat_id: int | None = None) -> None:
     receipt_services.update_receipt(receipt_id, status='failed')
@@ -55,16 +50,19 @@ def process_file_task(self, receipt_id: str, file_path: str, chat_id: int, file_
         items = []
         if hasattr(ticket, 'items') and ticket.items:
             for item in ticket.items:
+                item_name = str(extraction_review.field_value(item.name) or "")
+                item_price = extraction_review.field_value(item.price) or 0.0
+                item_quantity = extraction_review.field_value(item.quantity) or 1
                 # Look up if you've bought something similar before
-                matched_category, vector_data = extract_info_service.find_nearest_category(item_name_string=item.name)
+                matched_category, vector_data = extract_info_service.find_nearest_category(item_name_string=item_name)
                 if matched_category:
                     category = matched_category
                 else:
-                    category = extract_info_service.categorize_item(item.name)
+                    category = extract_info_service.categorize_item(item_name)
                 receipt_item = ReceiptItemData(
-                    name=item.name,
-                    price=float(item.price),
-                    quantity=int(item.quantity),
+                    name=item_name,
+                    price=float(item_price),
+                    quantity=int(item_quantity),
                     category=category,
                     embedding=vector_data
                 )
@@ -72,19 +70,19 @@ def process_file_task(self, receipt_id: str, file_path: str, chat_id: int, file_
         else:
             logger.warning("No items found in extracted data")
             
-        # Phase 3: Update receipt with extracted data and COMPLETED status
-        total_amount = float(ticket.total) if hasattr(ticket, 'total') else 0.0
-        receipt_services.update_receipt(
-            receipt_id,
-            purchase_date=timezone.now(),
-            total_amount=Decimal(str(total_amount)),
-            subtotal_amount=Decimal(str(ticket.subtotal)) if hasattr(ticket, 'subtotal') else None,
-            discount_amount=Decimal(str(ticket.discount)) if hasattr(ticket, 'discount') else None,
-            store_name=ticket.store_name if hasattr(ticket, 'store_name') else None,
+        # Phase 3: Validate and persist extracted data
+        application_result = extraction_review.apply_extraction_result(
+            receipt_id=receipt_id,
+            ticket=ticket,
             items=items,
-            status='completed'
         )
-        logger.info(f"Receipt {receipt_id} completed with {len(items)} items")
+        total_amount = float(application_result.total_amount)
+        logger.info(
+            "Receipt %s saved with status %s and %s items",
+            receipt_id,
+            application_result.status,
+            len(items),
+        )
         
         # Cleanup temp file
         if file_path and os.path.exists(file_path):
@@ -97,7 +95,15 @@ def process_file_task(self, receipt_id: str, file_path: str, chat_id: int, file_
         if bot_token and chat_id:
             bot = Bot(token=bot_token)
             
-            message_text = f"✅ Receipt {receipt_id} processed successfully!\nTotal: ${total_amount:,.2f}\nItems Extracted: {len(items)}\n\nItems:\n"
+            if application_result.status == "needs_review":
+                message_text = (
+                    f"⚠️ Receipt {receipt_id} needs manual review.\n"
+                    f"Total: ${total_amount:,.2f}\n"
+                    f"Issues: {len(application_result.validation.issues)}\n"
+                    f"Items Extracted: {len(items)}\n\nItems:\n"
+                )
+            else:
+                message_text = f"✅ Receipt {receipt_id} processed successfully!\nTotal: ${total_amount:,.2f}\nItems Extracted: {len(items)}\n\nItems:\n"
             for item in items:
                 message_text += f"- {item.name} (x{item.quantity}): ${item.price:,.2f}\n"
                 
