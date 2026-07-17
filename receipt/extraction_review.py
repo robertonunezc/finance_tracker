@@ -32,6 +32,13 @@ class ExtractionApplicationResult:
     validation: ValidationResult
 
 
+@dataclass(frozen=True)
+class ReviewActionResult:
+    status: str
+    approved: bool
+    validation: ValidationResult
+
+
 def parse_amounts_from_source_text(source_text: str) -> list[Decimal]:
     if not source_text:
         return []
@@ -143,6 +150,18 @@ def apply_extraction_result(
         item_count=len(items or payload.get("items") or []),
         validation=validation,
     )
+
+
+def save_review_corrections(receipt_id: str, form_data: Mapping[str, Any]) -> ReviewActionResult:
+    return _apply_review_action(receipt_id, form_data, approve=False, user=None)
+
+
+def approve_review(
+    receipt_id: str,
+    form_data: Mapping[str, Any],
+    user: Any,
+) -> ReviewActionResult:
+    return _apply_review_action(receipt_id, form_data, approve=True, user=user)
 
 
 def field_value(field: Any) -> Any:
@@ -426,3 +445,119 @@ def _json_safe(value: Any) -> Any:
     if isinstance(value, list):
         return [_json_safe(item) for item in value]
     return value
+
+
+def _apply_review_action(
+    receipt_id: str,
+    form_data: Mapping[str, Any],
+    *,
+    approve: bool,
+    user: Any,
+) -> ReviewActionResult:
+    with transaction.atomic():
+        receipt = Receipt.objects.select_for_update().get(receipt_id=receipt_id)
+        review = ReceiptExtractionReview.objects.select_for_update().get(receipt=receipt)
+        corrected_payload = _build_corrected_payload(form_data, review.raw_extraction)
+        validation = validate_receipt_extraction(corrected_payload)
+        approved = approve and not validation.requires_review
+        receipt_status = "completed" if approved else "needs_review"
+
+        _save_receipt_values(receipt, corrected_payload, receipt_status, validation)
+        _replace_receipt_items(receipt, corrected_payload, items=None)
+
+        review.corrected_payload = corrected_payload
+        review.overall_confidence = validation.overall_confidence
+        review.issues = validation.issues
+        if approved:
+            review.status = "approved"
+            review.approved_by = _user_label(user)
+            review.approved_at = timezone.now()
+        else:
+            review.status = "needs_review"
+            review.approved_by = None
+            review.approved_at = None
+        review.save(
+            update_fields=[
+                "corrected_payload",
+                "overall_confidence",
+                "issues",
+                "status",
+                "approved_by",
+                "approved_at",
+                "updated_at",
+            ]
+        )
+
+    return ReviewActionResult(
+        status=receipt_status,
+        approved=approved,
+        validation=validation,
+    )
+
+
+def _build_corrected_payload(
+    form_data: Mapping[str, Any],
+    raw_extraction: Mapping[str, Any],
+) -> dict[str, Any]:
+    return {
+        "store_name": _corrected_field(
+            form_data.get("store_name"),
+            raw_extraction.get("store_name"),
+        ),
+        "subtotal": _corrected_field(
+            form_data.get("subtotal_amount"),
+            raw_extraction.get("subtotal"),
+        ),
+        "discount": _corrected_field(
+            form_data.get("discount_amount"),
+            raw_extraction.get("discount"),
+        ),
+        "total": _corrected_field(
+            form_data.get("total_amount"),
+            raw_extraction.get("total"),
+        ),
+        "items": [
+            _corrected_item(form_data, raw_extraction, index)
+            for index in range(_form_int(form_data.get("item_count"), default=0))
+        ],
+    }
+
+
+def _corrected_item(
+    form_data: Mapping[str, Any],
+    raw_extraction: Mapping[str, Any],
+    index: int,
+) -> dict[str, Any]:
+    raw_items = raw_extraction.get("items") or []
+    raw_item = raw_items[index] if index < len(raw_items) else {}
+    return {
+        "name": _corrected_field(form_data.get(f"item_{index}_name"), raw_item.get("name")),
+        "price": _corrected_field(form_data.get(f"item_{index}_price"), raw_item.get("price")),
+        "quantity": _corrected_field(form_data.get(f"item_{index}_quantity") or "1", raw_item.get("quantity")),
+        "category": _corrected_field(form_data.get(f"item_{index}_category"), raw_item.get("category")),
+    }
+
+
+def _corrected_field(value: Any, raw_field: Any) -> dict[str, Any]:
+    return {
+        "value": "" if value is None else str(value).strip(),
+        "source_text": _field_source(raw_field),
+        "confidence": 1.0,
+    }
+
+
+def _form_int(value: Any, *, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _user_label(user: Any) -> str:
+    if hasattr(user, "get_username"):
+        username = user.get_username()
+        if username:
+            return username
+    if hasattr(user, "username") and user.username:
+        return str(user.username)
+    return str(user)

@@ -268,3 +268,83 @@ class ReceiptExtractionApplicationTests(TestCase):
         self.assertEqual(review.status, "needs_review")
         self.assertEqual(review.issues[0]["code"], "low_confidence")
         self.assertEqual(review.raw_extraction["items"][0]["price"]["confidence"], 0.62)
+
+
+class ReceiptReviewCorrectionTests(TestCase):
+    def create_review_receipt(self):
+        from receipt.extraction_review import apply_extraction_result
+
+        receipt = Receipt.objects.create(
+            user_id="correction-user",
+            purchase_date=timezone.now(),
+            total_amount=Decimal("0.00"),
+            image_url="receipt.jpg",
+            status="processing",
+        )
+        payload = ReceiptExtractionValidationTests().valid_payload()
+        payload["items"][0]["price"]["confidence"] = 0.62
+        apply_extraction_result(
+            str(receipt.receipt_id),
+            payload,
+            [
+                ReceiptItemData(
+                    name="AMZN MX MARKETPLACE",
+                    price=1249.00,
+                    quantity=1,
+                    category="electronics",
+                )
+            ],
+        )
+        return Receipt.objects.get(receipt_id=receipt.receipt_id)
+
+    def post_data(self, *, total="1249.00", price="1249.00"):
+        return {
+            "store_name": "amazon",
+            "total_amount": total,
+            "subtotal_amount": "",
+            "discount_amount": "",
+            "item_count": "1",
+            "item_0_name": "AMZN MX MARKETPLACE",
+            "item_0_price": price,
+            "item_0_quantity": "1",
+            "item_0_category": "electronics",
+        }
+
+    def test_approval_is_blocked_while_issues_remain(self):
+        from receipt.extraction_review import approve_review
+
+        receipt = self.create_review_receipt()
+
+        result = approve_review(
+            str(receipt.receipt_id),
+            self.post_data(price="12490.00"),
+            user="admin",
+        )
+
+        receipt.refresh_from_db()
+        review = ReceiptExtractionReview.objects.get(receipt=receipt)
+        self.assertFalse(result.approved)
+        self.assertEqual(receipt.status, "needs_review")
+        self.assertEqual(review.status, "needs_review")
+        self.assertEqual(review.corrected_payload["items"][0]["price"]["value"], "12490.00")
+        self.assertTrue(result.validation.requires_review)
+
+    def test_approval_completes_receipt_after_valid_correction(self):
+        from receipt.extraction_review import approve_review
+
+        receipt = self.create_review_receipt()
+
+        result = approve_review(
+            str(receipt.receipt_id),
+            self.post_data(price="1249.00"),
+            user="admin",
+        )
+
+        receipt.refresh_from_db()
+        review = ReceiptExtractionReview.objects.get(receipt=receipt)
+        self.assertTrue(result.approved)
+        self.assertEqual(receipt.status, "completed")
+        self.assertEqual(receipt.total_amount, Decimal("1249.00"))
+        self.assertEqual(review.status, "approved")
+        self.assertEqual(review.approved_by, "admin")
+        self.assertIsNotNone(review.approved_at)
