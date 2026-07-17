@@ -23,6 +23,7 @@ media/
 *.egg
 .idea/
 .vscode/
+.superpowers/
 *.swp
 *.swo
 .DS_Store
