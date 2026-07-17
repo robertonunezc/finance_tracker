@@ -24,6 +24,7 @@ media/
 .idea/
 .vscode/
 .superpowers/
+.worktrees/
 *.swp
 *.swo
 .DS_Store
