@@ -4,8 +4,14 @@ from pgvector.django import VectorField
 STATUS_CHOICES = [
         ('pending', 'Pending'),
         ('processing', 'Processing'),
+        ('needs_review', 'Needs review'),
         ('completed', 'Completed'),
         ('failed', 'Failed'),
+    ]
+
+REVIEW_STATUS_CHOICES = [
+        ('needs_review', 'Needs review'),
+        ('approved', 'Approved'),
     ]
 
 
@@ -85,3 +91,27 @@ class ReceiptItem(models.Model):
     
     def __str__(self):
         return f"{self.name} ({self.receipt.receipt_id})"
+
+
+class ReceiptExtractionReview(models.Model):
+    receipt = models.OneToOneField(
+        Receipt,
+        on_delete=models.CASCADE,
+        related_name='extraction_review',
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=REVIEW_STATUS_CHOICES,
+        default='needs_review',
+    )
+    overall_confidence = models.FloatField(default=0.0)
+    issues = models.JSONField(default=list, blank=True)
+    raw_extraction = models.JSONField(default=dict, blank=True)
+    corrected_payload = models.JSONField(null=True, blank=True)
+    approved_by = models.CharField(max_length=255, null=True, blank=True)
+    approved_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Review for {self.receipt.receipt_id}"

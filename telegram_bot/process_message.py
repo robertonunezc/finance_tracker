@@ -42,6 +42,8 @@ def get_receipt_duplicate_action(status: str) -> str:
         return "skip_completed"
     if status in {"pending", "processing"}:
         return "skip_in_progress"
+    if status == "needs_review":
+        return "skip_needs_review"
     if status == "failed":
         return "retry"
     return "retry"

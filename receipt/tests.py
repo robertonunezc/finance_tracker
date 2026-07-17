@@ -4,6 +4,7 @@ import tempfile
 from decimal import Decimal
 
 from django.test import TestCase
+from django.utils import timezone
 
 from receipt import services as receipt_services
 from receipt.dataclasses import ReceiptData
@@ -68,6 +69,23 @@ class ReceiptFileHashTests(TestCase):
         self.assertFalse(result.created)
 
 
+class ReceiptReviewStatusTests(TestCase):
+    def test_needs_review_is_valid_receipt_status(self):
+        self.assertIn(
+            ("needs_review", "Needs review"),
+            list(Receipt._meta.get_field("status").choices),
+        )
+        receipt = Receipt.objects.create(
+            user_id="review-user",
+            purchase_date=timezone.now(),
+            total_amount=Decimal("10.00"),
+            image_url="receipt.jpg",
+            status="needs_review",
+        )
+
+        self.assertEqual(receipt.status, "needs_review")
+
+
 class ReceiptDuplicateActionTests(TestCase):
     def test_completed_duplicate_skips_processing(self):
         from telegram_bot.process_message import get_receipt_duplicate_action
@@ -84,3 +102,8 @@ class ReceiptDuplicateActionTests(TestCase):
         from telegram_bot.process_message import get_receipt_duplicate_action
 
         self.assertEqual(get_receipt_duplicate_action("failed"), "retry")
+
+    def test_needs_review_duplicate_skips_new_task(self):
+        from telegram_bot.process_message import get_receipt_duplicate_action
+
+        self.assertEqual(get_receipt_duplicate_action("needs_review"), "skip_needs_review")
