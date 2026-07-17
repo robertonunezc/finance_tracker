@@ -36,6 +36,44 @@ ALLOWED_USERS = [int(user_id) for user_id in os.environ.get("ALLOWED_USERS").spl
 BANNED_FILE_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "banned.txt"))
 _auth_lock = asyncio.Lock()
 
+
+def get_receipt_duplicate_action(status: str) -> str:
+    if status == "completed":
+        return "skip_completed"
+    if status in {"pending", "processing"}:
+        return "skip_in_progress"
+    if status == "failed":
+        return "retry"
+    return "retry"
+
+
+def get_receipt_user(update: Update) -> str:
+    if update.message:
+        return (
+            update.message.from_user.username or
+            update.message.from_user.first_name or
+            f"user_{update.message.from_user.id}"
+        )
+    return 'anonymous'
+
+
+async def reply_for_existing_receipt(update: Update, receipt_id: str, status: str, action: str) -> None:
+    if action == "skip_completed":
+        await update.message.reply_text(
+            f"♻️ This receipt was already uploaded.\n\n"
+            f"Receipt ID: `{receipt_id}`\n"
+            f"Status: completed",
+            parse_mode="Markdown"
+        )
+        return
+
+    await update.message.reply_text(
+        f"⏳ This receipt is already queued for processing.\n\n"
+        f"Receipt ID: `{receipt_id}`\n"
+        f"Status: {status}",
+        parse_mode="Markdown"
+    )
+
 async def authenticate_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     user_id = update.effective_user.id
     async with _auth_lock:
@@ -104,32 +142,52 @@ async def process_receipt_upload(update: Update, context: ContextTypes.DEFAULT_T
             temp_file.write(file_data.read())
             temp_file_path = temp_file.name
         
-        # Upload file 
+        file_hash = receipt_services.compute_file_sha256(temp_file_path)
+        user = get_receipt_user(update)
+
+        existing_receipt = await sync_to_async(receipt_services.get_receipt_by_user_and_file_hash)(user, file_hash)
+        if existing_receipt:
+            receipt_id = existing_receipt.receipt_id
+            action = get_receipt_duplicate_action(existing_receipt.status)
+            if action != "retry":
+                await reply_for_existing_receipt(update, receipt_id, existing_receipt.status, action)
+                return
+
+        # Upload file
         file_name = f"{document[-1].file_id}{file_extension}"
         url = upload_service.upload_file(temp_file_path, file_name)
         logger.info(f"Photo uploaded: {url}")
-        
-        # Get user identifier
-        if update.message:
-            user = (
-                update.message.from_user.username or
-                update.message.from_user.first_name or
-                f"user_{update.message.from_user.id}"
+
+        if existing_receipt:
+            await sync_to_async(receipt_services.update_receipt)(
+                receipt_id,
+                image_url=url,
+                status='pending'
             )
+            logger.info(f"Receipt {receipt_id} reused for duplicate retry")
         else:
-            user = 'anonymous'
-        
-        # Phase 1: Create receipt with PENDING status
-        receipt_data = ReceiptData(
-            user_id=user,
-            image_url=url,
-            status='pending'
-        )
-        # Wrap Django ORM call in sync_to_async for async context
-        created_receipt = await sync_to_async(receipt_services.create_receipt)(receipt_data)
-        receipt_id = getattr(created_receipt, 'receipt_id', None)
-        
-        logger.info(f"Receipt {receipt_id} created with PENDING status")
+            # Phase 1: Create receipt with PENDING status
+            receipt_data = ReceiptData(
+                user_id=user,
+                image_url=url,
+                status='pending'
+            )
+            # Wrap Django ORM call in sync_to_async for async context
+            created_receipt = await sync_to_async(receipt_services.create_receipt_with_file_hash)(receipt_data, file_hash)
+            receipt_id = getattr(created_receipt, 'receipt_id', None)
+
+            if not created_receipt.created:
+                action = get_receipt_duplicate_action(created_receipt.status)
+                if action != "retry":
+                    await reply_for_existing_receipt(update, receipt_id, created_receipt.status, action)
+                    return
+                await sync_to_async(receipt_services.update_receipt)(
+                    receipt_id,
+                    image_url=url,
+                    status='pending'
+                )
+
+            logger.info(f"Receipt {receipt_id} created with PENDING status")
         
         # Notify user immediately - upload successful
         await update.message.reply_text(
@@ -164,6 +222,12 @@ async def process_receipt_upload(update: Update, context: ContextTypes.DEFAULT_T
             f"Status: failed",
             parse_mode="Markdown"
         )
+    finally:
+        if temp_file_path and os.path.exists(temp_file_path):
+            try:
+                os.unlink(temp_file_path)
+            except OSError as cleanup_error:
+                logger.error(f"Failed to cleanup temp file {temp_file_path}: {cleanup_error}")
 
 
 

@@ -22,3 +22,13 @@ class ReceiptData:
     total_amount: Optional[Decimal] = None
     status: Optional[str] = 'pending'
     items: Optional[List[ReceiptItem]] = None
+
+
+@dataclass
+class ReceiptLookupResult:
+    receipt_id: str
+    user_id: str
+    image_url: str
+    status: str
+    created: bool
+    file_hash: Optional[str] = None
