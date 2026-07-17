@@ -412,3 +412,36 @@ class ReceiptReviewViewTests(TestCase):
         receipt.refresh_from_db()
         self.assertEqual(response.status_code, 302)
         self.assertEqual(receipt.status, "completed")
+
+
+class ReceiptReviewReportExclusionTests(TestCase):
+    def create_receipt_with_item(self, *, status: str, price: float):
+        receipt = Receipt.objects.create(
+            user_id=f"report-{status}",
+            purchase_date=timezone.now(),
+            total_amount=Decimal(str(price)),
+            image_url=f"{status}.jpg",
+            status=status,
+            store_name="amazon",
+        )
+        ReceiptItem.objects.create(
+            receipt=receipt,
+            name=f"{status} item",
+            price=price,
+            quantity=1,
+            category="electronics",
+        )
+        return receipt
+
+    def test_reports_exclude_needs_review_receipts(self):
+        from reports.services import CategorySpendingService, ReceiptItemsService
+
+        self.create_receipt_with_item(status="completed", price=10.00)
+        self.create_receipt_with_item(status="needs_review", price=99.00)
+
+        item_report = ReceiptItemsService.build_report({})
+        category_report = CategorySpendingService.build_report({})
+
+        self.assertEqual(item_report.item_count, 1)
+        self.assertEqual(item_report.total_amount, Decimal("10.00"))
+        self.assertEqual(category_report.grand_total, Decimal("10.00"))
