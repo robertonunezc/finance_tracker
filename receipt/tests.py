@@ -107,3 +107,107 @@ class ReceiptDuplicateActionTests(TestCase):
         from telegram_bot.process_message import get_receipt_duplicate_action
 
         self.assertEqual(get_receipt_duplicate_action("needs_review"), "skip_needs_review")
+
+
+class ReceiptExtractionValidationTests(TestCase):
+    def valid_payload(self):
+        return {
+            "store_name": {
+                "value": "amazon",
+                "source_text": "AMZN MX MARKETPLACE",
+                "confidence": 0.92,
+            },
+            "total": {
+                "value": "1249.00",
+                "source_text": "TOTAL 1,249.00",
+                "confidence": 0.94,
+            },
+            "items": [
+                {
+                    "name": {
+                        "value": "AMZN MX MARKETPLACE",
+                        "source_text": "AMZN MX MARKETPLACE 1,249.00",
+                        "confidence": 0.91,
+                    },
+                    "price": {
+                        "value": "1249.00",
+                        "source_text": "AMZN MX MARKETPLACE 1,249.00",
+                        "confidence": 0.93,
+                    },
+                    "quantity": {
+                        "value": 1,
+                        "source_text": "AMZN MX MARKETPLACE 1,249.00",
+                        "confidence": 0.95,
+                    },
+                    "category": {
+                        "value": "electronics",
+                        "source_text": "AMZN MX MARKETPLACE",
+                        "confidence": 0.90,
+                    },
+                }
+            ],
+        }
+
+    def test_valid_payload_does_not_require_review(self):
+        from receipt.extraction_review import validate_receipt_extraction
+
+        result = validate_receipt_extraction(self.valid_payload())
+
+        self.assertFalse(result.requires_review)
+        self.assertEqual(result.issues, [])
+
+    def test_low_confidence_requires_review(self):
+        from receipt.extraction_review import validate_receipt_extraction
+
+        payload = self.valid_payload()
+        payload["items"][0]["price"]["confidence"] = 0.62
+
+        result = validate_receipt_extraction(payload)
+
+        self.assertTrue(result.requires_review)
+        self.assertEqual(result.issues[0]["code"], "low_confidence")
+        self.assertEqual(result.issues[0]["path"], "items[0].price")
+
+    def test_source_amount_mismatch_requires_review(self):
+        from receipt.extraction_review import validate_receipt_extraction
+
+        payload = self.valid_payload()
+        payload["items"][0]["price"]["value"] = "12490.00"
+
+        result = validate_receipt_extraction(payload)
+
+        self.assertTrue(result.requires_review)
+        self.assertEqual(result.issues[0]["code"], "source_amount_mismatch")
+        self.assertEqual(result.issues[0]["path"], "items[0].price")
+
+    def test_item_sum_mismatch_requires_review(self):
+        from receipt.extraction_review import validate_receipt_extraction
+
+        payload = self.valid_payload()
+        payload["total"]["value"] = "1300.00"
+        payload["total"]["source_text"] = "TOTAL 1300.00"
+
+        result = validate_receipt_extraction(payload)
+
+        self.assertTrue(result.requires_review)
+        self.assertEqual(result.issues[0]["code"], "item_sum_mismatch")
+        self.assertEqual(result.issues[0]["path"], "total")
+
+    def test_missing_required_value_requires_review(self):
+        from receipt.extraction_review import validate_receipt_extraction
+
+        payload = self.valid_payload()
+        payload["items"][0]["name"]["value"] = ""
+
+        result = validate_receipt_extraction(payload)
+
+        self.assertTrue(result.requires_review)
+        self.assertEqual(result.issues[0]["code"], "missing_required_value")
+        self.assertEqual(result.issues[0]["path"], "items[0].name")
+
+    def test_source_amount_parser_handles_mexican_amount_format(self):
+        from receipt.extraction_review import parse_amounts_from_source_text
+
+        amounts = parse_amounts_from_source_text("AMZN MX MARKETPLACE  1,249.00")
+
+        self.assertEqual(amounts, [Decimal("1249.00")])
