@@ -38,19 +38,19 @@ Return ONLY valid JSON, no markdown formatting.
 class TextExtractionField(BaseModel):
     value: Optional[str] = Field(description="Normalized extracted text value")
     source_text: str = Field(default="", description="Exact source text used as evidence")
-    confidence: float = Field(description="Confidence score from 0 to 1")
+    confidence: float = Field(ge=0, le=1, description="Confidence score from 0 to 1")
 
 
 class AmountExtractionField(BaseModel):
     value: Optional[float] = Field(description="Normalized numeric amount")
     source_text: str = Field(default="", description="Exact source text used as evidence")
-    confidence: float = Field(description="Confidence score from 0 to 1")
+    confidence: float = Field(ge=0, le=1, description="Confidence score from 0 to 1")
 
 
 class IntegerExtractionField(BaseModel):
     value: Optional[int] = Field(description="Normalized integer value")
     source_text: str = Field(default="", description="Exact source text used as evidence")
-    confidence: float = Field(description="Confidence score from 0 to 1")
+    confidence: float = Field(ge=0, le=1, description="Confidence score from 0 to 1")
 
 
 class Item(BaseModel):

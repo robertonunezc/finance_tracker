@@ -1,3 +1,4 @@
+import logging
 import re
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
@@ -12,6 +13,7 @@ from receipt.models import Category, Receipt, ReceiptExtractionReview, ReceiptIt
 
 CONFIDENCE_THRESHOLD = 0.80
 ITEM_TOTAL_TOLERANCE = Decimal("1.00")
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -44,7 +46,8 @@ def parse_amounts_from_source_text(source_text: str) -> list[Decimal]:
         return []
 
     amounts = []
-    for raw_amount in re.findall(r"(?<!\w)-?\$?\s*\d{1,3}(?:,\d{3})*(?:\.\d{2})?|-?\$?\s*\d+(?:\.\d{2})", source_text):
+    amount_pattern = r"(?<![\w.])-?\$?\s*(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?(?![\w.])"
+    for raw_amount in re.findall(amount_pattern, source_text):
         normalized = raw_amount.replace("$", "").replace(",", "").replace(" ", "")
         try:
             amounts.append(Decimal(normalized).quantize(Decimal("0.01")))
@@ -119,14 +122,30 @@ def apply_extraction_result(
     ticket: Any,
     items: list[ReceiptItemData] | None,
 ) -> ExtractionApplicationResult:
-    payload = build_extraction_payload(ticket, items)
-    validation = validate_receipt_extraction(payload)
+    raw_payload = build_extraction_payload(ticket)
+    payload = build_extraction_payload(raw_payload, items)
+    try:
+        validation = validate_receipt_extraction(payload)
+    except Exception as exc:
+        logger.error("Receipt extraction validation failed for %s: %s", receipt_id, exc)
+        validation = ValidationResult(
+            overall_confidence=0.0,
+            issues=[
+                _issue(
+                    path="extraction",
+                    code="validation_error",
+                    message="Validation failed unexpectedly and requires manual review.",
+                    extracted_value=exc,
+                    source_text="",
+                )
+            ],
+        )
     status = "needs_review" if validation.requires_review else "completed"
     total_amount = _field_decimal(payload.get("total")) or Decimal("0.00")
 
     with transaction.atomic():
         receipt = Receipt.objects.select_for_update().get(receipt_id=receipt_id)
-        _save_receipt_values(receipt, payload, status, validation)
+        _save_receipt_values(receipt, raw_payload, payload, status, validation)
         _replace_receipt_items(receipt, payload, items)
 
         if validation.requires_review:
@@ -136,7 +155,7 @@ def apply_extraction_result(
                     "status": "needs_review",
                     "overall_confidence": validation.overall_confidence,
                     "issues": validation.issues,
-                    "raw_extraction": payload,
+                    "raw_extraction": raw_payload,
                     "approved_by": None,
                     "approved_at": None,
                 },
@@ -250,6 +269,7 @@ def _collect_field_confidence(
     except (TypeError, ValueError):
         confidence_value = 0.0
 
+    confidence_value = min(max(confidence_value, 0.0), 1.0)
     confidences.append(confidence_value)
     if confidence_value < CONFIDENCE_THRESHOLD:
         issues.append(_issue(
@@ -264,6 +284,8 @@ def _collect_field_confidence(
 def _validate_source_amount(path: str, field: Any, issues: list[dict[str, Any]]) -> None:
     extracted_amount = _field_decimal(field)
     if extracted_amount is None:
+        return
+    if isinstance(field, Mapping) and field.get("reviewed"):
         return
 
     source_text = _field_source(field)
@@ -352,6 +374,7 @@ def _issue(
 
 def _save_receipt_values(
     receipt: Receipt,
+    raw_payload: Mapping[str, Any],
     payload: Mapping[str, Any],
     status: str,
     validation: ValidationResult,
@@ -363,7 +386,8 @@ def _save_receipt_values(
     receipt.store_name = _field_raw_value(payload.get("store_name")) or None
     receipt.status = status
     receipt.extraction_result = {
-        "raw_extraction": payload,
+        "raw_extraction": raw_payload,
+        "applied_payload": payload,
         "validation": {
             "overall_confidence": validation.overall_confidence,
             "requires_review": validation.requires_review,
@@ -422,12 +446,12 @@ def _coerce_field(value: Any, confidence: float = 1.0) -> dict[str, Any]:
         return {
             "value": _json_safe(getattr(value, "value")),
             "source_text": str(getattr(value, "source_text", "") or ""),
-            "confidence": float(getattr(value, "confidence", confidence) or 0.0),
+            "confidence": _clamp_confidence(getattr(value, "confidence", confidence)),
         }
     return {
         "value": _json_safe(value),
         "source_text": "" if value is None else str(value),
-        "confidence": confidence,
+        "confidence": _clamp_confidence(confidence),
     }
 
 
@@ -447,6 +471,14 @@ def _json_safe(value: Any) -> Any:
     return value
 
 
+def _clamp_confidence(value: Any) -> float:
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    return min(max(confidence, 0.0), 1.0)
+
+
 def _apply_review_action(
     receipt_id: str,
     form_data: Mapping[str, Any],
@@ -462,7 +494,7 @@ def _apply_review_action(
         approved = approve and not validation.requires_review
         receipt_status = "completed" if approved else "needs_review"
 
-        _save_receipt_values(receipt, corrected_payload, receipt_status, validation)
+        _save_receipt_values(receipt, review.raw_extraction, corrected_payload, receipt_status, validation)
         _replace_receipt_items(receipt, corrected_payload, items=None)
 
         review.corrected_payload = corrected_payload
@@ -543,6 +575,7 @@ def _corrected_field(value: Any, raw_field: Any) -> dict[str, Any]:
         "value": "" if value is None else str(value).strip(),
         "source_text": _field_source(raw_field),
         "confidence": 1.0,
+        "reviewed": True,
     }
 
 

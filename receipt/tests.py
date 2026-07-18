@@ -2,6 +2,7 @@ import hashlib
 import os
 import tempfile
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.urls import reverse
@@ -214,6 +215,34 @@ class ReceiptExtractionValidationTests(TestCase):
 
         self.assertEqual(amounts, [Decimal("1249.00")])
 
+    def test_source_amount_parser_handles_unseparated_four_digit_amount(self):
+        from receipt.extraction_review import parse_amounts_from_source_text
+
+        amounts = parse_amounts_from_source_text("TOTAL 1249.00")
+
+        self.assertEqual(amounts, [Decimal("1249.00")])
+
+    def test_unseparated_source_amount_does_not_create_false_mismatch(self):
+        from receipt.extraction_review import validate_receipt_extraction
+
+        payload = self.valid_payload()
+        payload["total"]["source_text"] = "TOTAL 1249.00"
+        payload["items"][0]["price"]["source_text"] = "AMZN MX MARKETPLACE 1249.00"
+
+        result = validate_receipt_extraction(payload)
+
+        self.assertFalse(result.requires_review)
+
+    def test_confidence_values_are_clamped_to_contract_range(self):
+        from receipt.extraction_review import validate_receipt_extraction
+
+        payload = self.valid_payload()
+        payload["total"]["confidence"] = 1.5
+
+        result = validate_receipt_extraction(payload)
+
+        self.assertEqual(result.overall_confidence, 0.9)
+
 
 class ReceiptExtractionApplicationTests(TestCase):
     def create_pending_receipt(self):
@@ -270,6 +299,33 @@ class ReceiptExtractionApplicationTests(TestCase):
         self.assertEqual(review.status, "needs_review")
         self.assertEqual(review.issues[0]["code"], "low_confidence")
         self.assertEqual(review.raw_extraction["items"][0]["price"]["confidence"], 0.62)
+
+    def test_raw_extraction_preserves_original_llm_category_before_enrichment(self):
+        from receipt.extraction_review import apply_extraction_result
+
+        receipt = self.create_pending_receipt()
+        payload = self.valid_payload()
+        payload["items"][0]["category"]["value"] = "other"
+
+        apply_extraction_result(str(receipt.receipt_id), payload, self.enriched_items())
+
+        receipt.refresh_from_db()
+        self.assertEqual(receipt.extraction_result["raw_extraction"]["items"][0]["category"]["value"], "other")
+        self.assertEqual(receipt.extraction_result["applied_payload"]["items"][0]["category"]["value"], "electronics")
+
+    def test_validation_exception_falls_back_to_needs_review(self):
+        from receipt.extraction_review import apply_extraction_result
+
+        receipt = self.create_pending_receipt()
+
+        with patch("receipt.extraction_review.validate_receipt_extraction", side_effect=RuntimeError("validator failed")):
+            result = apply_extraction_result(str(receipt.receipt_id), self.valid_payload(), self.enriched_items())
+
+        receipt.refresh_from_db()
+        review = ReceiptExtractionReview.objects.get(receipt=receipt)
+        self.assertEqual(result.status, "needs_review")
+        self.assertEqual(receipt.status, "needs_review")
+        self.assertEqual(review.issues[0]["code"], "validation_error")
 
 
 class ReceiptReviewCorrectionTests(TestCase):
@@ -350,6 +406,25 @@ class ReceiptReviewCorrectionTests(TestCase):
         self.assertEqual(review.status, "approved")
         self.assertEqual(review.approved_by, "admin")
         self.assertIsNotNone(review.approved_at)
+
+    def test_approval_allows_corrected_amount_when_original_evidence_was_wrong(self):
+        from receipt.extraction_review import approve_review
+
+        receipt = self.create_review_receipt()
+        review = ReceiptExtractionReview.objects.get(receipt=receipt)
+        review.raw_extraction["items"][0]["price"]["source_text"] = "AMZN MX MARKETPLACE 12,490.00"
+        review.raw_extraction["total"]["source_text"] = "TOTAL 12,490.00"
+        review.save(update_fields=["raw_extraction"])
+
+        result = approve_review(
+            str(receipt.receipt_id),
+            self.post_data(price="1249.00"),
+            user="admin",
+        )
+
+        receipt.refresh_from_db()
+        self.assertTrue(result.approved)
+        self.assertEqual(receipt.status, "completed")
 
 
 class ReceiptReviewViewTests(TestCase):
