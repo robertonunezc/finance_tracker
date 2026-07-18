@@ -12,6 +12,7 @@ class ReceiptItem:
     price: float
     quantity: Optional[int] = 1
     category: Optional[str] = 'other'
+    category_confidence: Optional[float] = None
     embedding: Optional[List[float]] = None 
 
 @dataclass

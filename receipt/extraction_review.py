@@ -62,6 +62,7 @@ def validate_receipt_extraction(payload: Mapping[str, Any]) -> ValidationResult:
     confidences: list[float] = []
 
     _validate_required_receipt_fields(payload, issues)
+    _validate_items_present(payload, issues)
     _collect_confidence_issues(payload, issues, confidences)
     _validate_source_amount("total", payload.get("total"), issues)
 
@@ -114,6 +115,8 @@ def build_extraction_payload(ticket: Any, items: list[ReceiptItemData] | None = 
                 payload_items[index].get("category"),
                 item.category or Category.OTHER,
             )
+            if item.category_confidence is not None:
+                payload_items[index]["category"]["confidence"] = _clamp_confidence(item.category_confidence)
 
     return payload
 
@@ -200,9 +203,23 @@ def _validate_required_receipt_fields(payload: Mapping[str, Any], issues: list[d
         ))
 
 
+def _validate_items_present(payload: Mapping[str, Any], issues: list[dict[str, Any]]) -> None:
+    if payload.get("items"):
+        return
+
+    issues.append(_issue(
+        path="items",
+        code="missing_items",
+        message="At least one receipt item is required.",
+        extracted_value="",
+        source_text="",
+    ))
+
+
 def _validate_required_item_fields(index: int, item: Mapping[str, Any], issues: list[dict[str, Any]]) -> None:
     name = item.get("name")
     price = item.get("price")
+    quantity = item.get("quantity")
     category = item.get("category")
 
     if not str(_field_raw_value(name) or "").strip():
@@ -221,6 +238,15 @@ def _validate_required_item_fields(index: int, item: Mapping[str, Any], issues: 
             message="Item price is required.",
             extracted_value=_field_raw_value(price),
             source_text=_field_source(price),
+        ))
+
+    if _field_positive_int(quantity) is None:
+        issues.append(_issue(
+            path=f"items[{index}].quantity",
+            code="invalid_quantity",
+            message="Item quantity must be a positive whole number.",
+            extracted_value=_field_raw_value(quantity),
+            source_text=_field_source(quantity),
         ))
 
     category_value = str(_field_raw_value(category) or "").strip()
@@ -336,8 +362,10 @@ def _validate_item_sum(payload: Mapping[str, Any], issues: list[dict[str, Any]])
         price = _field_decimal(item.get("price"))
         if price is None:
             continue
+        quantity = _field_positive_int(item.get("quantity"))
+        if quantity is None:
+            continue
         saw_item_price = True
-        quantity = _field_decimal(item.get("quantity")) or Decimal("1")
         line_total += price * quantity
 
     if saw_item_price and abs(line_total - total) > ITEM_TOTAL_TOLERANCE:
@@ -376,6 +404,22 @@ def _field_decimal(field: Any) -> Decimal | None:
         return None
 
 
+def _field_positive_int(field: Any) -> int | None:
+    return _positive_int_value(_field_raw_value(field))
+
+
+def _positive_int_value(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        quantity = Decimal(str(value).replace(",", ""))
+    except (InvalidOperation, ValueError):
+        return None
+    if quantity < 1 or quantity != quantity.to_integral_value():
+        return None
+    return int(quantity)
+
+
 def _field_is_blank(field: Any) -> bool:
     return str(_field_raw_value(field) or "").strip() == ""
 
@@ -405,7 +449,6 @@ def _save_receipt_values(
     status: str,
     validation: ValidationResult,
 ) -> None:
-    receipt.purchase_date = timezone.now()
     receipt.total_amount = _field_decimal(payload.get("total")) or Decimal("0.00")
     receipt.subtotal_amount = _field_decimal(payload.get("subtotal"))
     receipt.discount_amount = _field_decimal(payload.get("discount"))
@@ -422,7 +465,6 @@ def _save_receipt_values(
     }
     receipt.save(
         update_fields=[
-            "purchase_date",
             "total_amount",
             "subtotal_amount",
             "discount_amount",
@@ -448,7 +490,7 @@ def _replace_receipt_items(
             receipt=receipt,
             name=item.name,
             price=float(item.price),
-            quantity=int(item.quantity or 1),
+            quantity=_positive_int_value(item.quantity) or 1,
             category=item.category or Category.OTHER,
             embedding=item.embedding,
         )
@@ -458,7 +500,7 @@ def _payload_item_to_dataclass(item: Mapping[str, Any]) -> ReceiptItemData:
     return ReceiptItemData(
         name=str(_field_raw_value(item.get("name")) or ""),
         price=float(_field_decimal(item.get("price")) or Decimal("0.00")),
-        quantity=int(_field_decimal(item.get("quantity")) or Decimal("1")),
+        quantity=_field_positive_int(item.get("quantity")) or 1,
         category=str(_field_raw_value(item.get("category")) or Category.OTHER),
     )
 

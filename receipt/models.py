@@ -115,3 +115,8 @@ class ReceiptExtractionReview(models.Model):
 
     def __str__(self):
         return f"Review for {self.receipt.receipt_id}"
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['status', '-updated_at'], name='receipt_review_queue_idx'),
+        ]

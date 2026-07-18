@@ -2,12 +2,14 @@ from celery import shared_task
 import logging
 import os
 import asyncio
+from decimal import Decimal, InvalidOperation
 from telegram import Bot
 
 from extract_info import services as extract_info_service
 from receipt import extraction_review
 from receipt import services as receipt_services
 from receipt.dataclasses import ReceiptItem as ReceiptItemData
+from receipt.models import Category
 
 logger = logging.getLogger(__name__)
 
@@ -52,18 +54,25 @@ def process_file_task(self, receipt_id: str, file_path: str, chat_id: int, file_
             for item in ticket.items:
                 item_name = str(extraction_review.field_value(item.name) or "")
                 item_price = extraction_review.field_value(item.price) or 0.0
-                item_quantity = extraction_review.field_value(item.quantity) or 1
-                # Look up if you've bought something similar before
-                matched_category, vector_data = extract_info_service.find_nearest_category(item_name_string=item_name)
-                if matched_category:
-                    category = matched_category
-                else:
-                    category = extract_info_service.categorize_item(item_name)
+                item_quantity = _positive_item_quantity(extraction_review.field_value(item.quantity)) or 1
+                category_confidence = None
+                vector_data = None
+                try:
+                    matched_category, vector_data = extract_info_service.find_nearest_category(item_name_string=item_name)
+                    if matched_category:
+                        category = matched_category
+                    else:
+                        category = extract_info_service.categorize_item(item_name)
+                except Exception as exc:
+                    logger.warning("Category enrichment failed for receipt %s item %s: %s", receipt_id, item_name, exc)
+                    category = Category.OTHER
+                    category_confidence = 0.0
                 receipt_item = ReceiptItemData(
                     name=item_name,
                     price=float(item_price),
-                    quantity=int(item_quantity),
+                    quantity=item_quantity,
                     category=category,
+                    category_confidence=category_confidence,
                     embedding=vector_data
                 )
                 items.append(receipt_item)
@@ -125,3 +134,15 @@ def process_file_task(self, receipt_id: str, file_path: str, chat_id: int, file_
                 logger.error(f"Failed to update failed status for {receipt_id}: {inner_e}")
 
         raise
+
+
+def _positive_item_quantity(value):
+    if value in (None, ""):
+        return None
+    try:
+        quantity = Decimal(str(value).replace(",", ""))
+    except (InvalidOperation, ValueError):
+        return None
+    if quantity < 1 or quantity != quantity.to_integral_value():
+        return None
+    return int(quantity)

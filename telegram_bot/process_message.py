@@ -69,6 +69,15 @@ async def reply_for_existing_receipt(update: Update, receipt_id: str, status: st
         )
         return
 
+    if action == "skip_needs_review":
+        await update.message.reply_text(
+            f"⚠️ This receipt is already waiting for manual review.\n\n"
+            f"Receipt ID: `{receipt_id}`\n"
+            f"Status: needs_review",
+            parse_mode="Markdown"
+        )
+        return
+
     await update.message.reply_text(
         f"⏳ This receipt is already queued for processing.\n\n"
         f"Receipt ID: `{receipt_id}`\n"

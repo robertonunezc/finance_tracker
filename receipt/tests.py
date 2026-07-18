@@ -1,8 +1,10 @@
+import asyncio
 import hashlib
 import os
 import tempfile
 from decimal import Decimal
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from django.contrib.auth import get_user_model
 from django.urls import reverse
@@ -88,6 +90,11 @@ class ReceiptReviewStatusTests(TestCase):
 
         self.assertEqual(receipt.status, "needs_review")
 
+    def test_review_queue_has_status_updated_at_index(self):
+        indexes = [tuple(index.fields) for index in ReceiptExtractionReview._meta.indexes]
+
+        self.assertIn(("status", "-updated_at"), indexes)
+
 
 class ReceiptDuplicateActionTests(TestCase):
     def test_completed_duplicate_skips_processing(self):
@@ -110,6 +117,20 @@ class ReceiptDuplicateActionTests(TestCase):
         from telegram_bot.process_message import get_receipt_duplicate_action
 
         self.assertEqual(get_receipt_duplicate_action("needs_review"), "skip_needs_review")
+
+    def test_needs_review_duplicate_reply_mentions_manual_review(self):
+        from telegram_bot.process_message import reply_for_existing_receipt
+
+        message = SimpleNamespace(reply_text=AsyncMock())
+        update = SimpleNamespace(message=message)
+
+        asyncio.run(reply_for_existing_receipt(update, "receipt-id", "needs_review", "skip_needs_review"))
+
+        message.reply_text.assert_awaited_once()
+        self.assertIn(
+            "waiting for manual review",
+            message.reply_text.call_args.args[0],
+        )
 
 
 class ReceiptExtractionValidationTests(TestCase):
@@ -218,6 +239,42 @@ class ReceiptExtractionValidationTests(TestCase):
         self.assertTrue(result.requires_review)
         self.assertEqual(result.issues[0]["code"], "item_sum_mismatch")
         self.assertEqual(result.issues[0]["path"], "total")
+
+    def test_missing_items_require_review(self):
+        from receipt.extraction_review import validate_receipt_extraction
+
+        payload = self.valid_payload()
+        payload["items"] = []
+
+        result = validate_receipt_extraction(payload)
+
+        self.assertTrue(result.requires_review)
+        self.assertEqual(result.issues[0]["code"], "missing_items")
+        self.assertEqual(result.issues[0]["path"], "items")
+
+    def test_fractional_quantity_requires_review(self):
+        from receipt.extraction_review import validate_receipt_extraction
+
+        payload = self.valid_payload()
+        payload["items"][0]["quantity"]["value"] = "1.5"
+
+        result = validate_receipt_extraction(payload)
+
+        self.assertTrue(result.requires_review)
+        self.assertEqual(result.issues[0]["code"], "invalid_quantity")
+        self.assertEqual(result.issues[0]["path"], "items[0].quantity")
+
+    def test_non_positive_quantity_requires_review(self):
+        from receipt.extraction_review import validate_receipt_extraction
+
+        payload = self.valid_payload()
+        payload["items"][0]["quantity"]["value"] = "0"
+
+        result = validate_receipt_extraction(payload)
+
+        self.assertTrue(result.requires_review)
+        self.assertEqual(result.issues[0]["code"], "invalid_quantity")
+        self.assertEqual(result.issues[0]["path"], "items[0].quantity")
 
     def test_missing_required_value_requires_review(self):
         from receipt.extraction_review import validate_receipt_extraction
@@ -480,6 +537,34 @@ class ReceiptReviewCorrectionTests(TestCase):
             ["Keyboard", "Mouse"],
         )
 
+    def test_approval_preserves_existing_purchase_date(self):
+        from receipt.extraction_review import approve_review
+
+        receipt = self.create_review_receipt()
+        original_purchase_date = timezone.now() - timezone.timedelta(days=3)
+        receipt.purchase_date = original_purchase_date
+        receipt.save(update_fields=["purchase_date"])
+
+        result = approve_review(str(receipt.receipt_id), self.post_data(), user="admin")
+
+        receipt.refresh_from_db()
+        self.assertTrue(result.approved)
+        self.assertEqual(receipt.purchase_date, original_purchase_date)
+
+    def test_approval_blocks_invalid_quantity(self):
+        from receipt.extraction_review import approve_review
+
+        receipt = self.create_review_receipt()
+        data = self.post_data()
+        data["item_0_quantity"] = "1.5"
+
+        result = approve_review(str(receipt.receipt_id), data, user="admin")
+
+        receipt.refresh_from_db()
+        self.assertFalse(result.approved)
+        self.assertEqual(receipt.status, "needs_review")
+        self.assertEqual(result.validation.issues[0]["code"], "invalid_quantity")
+
 
 class ReceiptReviewViewTests(TestCase):
     def create_staff_user(self):
@@ -539,6 +624,15 @@ class ReceiptReviewViewTests(TestCase):
         self.assertContains(response, 'data-add-item')
         self.assertContains(response, 'name="item_0_delete"')
         self.assertContains(response, 'data-remove-item')
+
+    def test_detail_renders_field_level_issue_badges(self):
+        receipt = self.create_review_receipt()
+        self.client.force_login(self.create_staff_user())
+
+        response = self.client.get(reverse("receipt-review:detail", args=[receipt.receipt_id]))
+
+        self.assertContains(response, 'data-field-issues="items[0].price"')
+        self.assertContains(response, "low_confidence")
 
     def test_staff_can_approve_corrected_receipt(self):
         receipt = self.create_review_receipt()

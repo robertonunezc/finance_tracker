@@ -60,10 +60,17 @@ def review_detail(request, receipt_id):
             messages.success(request, "Corrections saved.")
         return redirect(reverse("receipt-review:detail", args=[receipt.receipt_id]))
 
+    issue_map = _group_issues_by_path(review.issues or [])
     item_rows = [
         {
             "index": index,
             "item": item,
+            "issues": {
+                "name": issue_map.get(f"items[{index}].name", []),
+                "quantity": issue_map.get(f"items[{index}].quantity", []),
+                "price": issue_map.get(f"items[{index}].price", []),
+                "category": issue_map.get(f"items[{index}].category", []),
+            },
         }
         for index, item in enumerate(receipt.items.all())
     ]
@@ -75,5 +82,19 @@ def review_detail(request, receipt_id):
             "review": review,
             "item_rows": item_rows,
             "category_options": Category.choices,
+            "receipt_field_issues": {
+                "store_name": issue_map.get("store_name", []),
+                "total": issue_map.get("total", []),
+                "subtotal": issue_map.get("subtotal", []),
+                "discount": issue_map.get("discount", []),
+                "items": issue_map.get("items", []),
+            },
         },
     )
+
+
+def _group_issues_by_path(issues):
+    grouped = {}
+    for issue in issues:
+        grouped.setdefault(issue.get("path", ""), []).append(issue)
+    return grouped

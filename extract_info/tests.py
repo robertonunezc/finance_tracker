@@ -136,3 +136,36 @@ class ProcessFileTaskReviewIntegrationTests(TestCase):
         self.assertTrue(result)
         self.assertIn("needs manual review", bot_class.return_value.send_message.call_args.kwargs["text"])
         self.assertIn("Issues: 1", bot_class.return_value.send_message.call_args.kwargs["text"])
+
+    @patch("extract_info.tasks.asyncio.run")
+    @patch("extract_info.tasks.Bot")
+    @patch("extract_info.tasks.os.getenv", return_value="bot-token")
+    @patch("extract_info.tasks.extraction_review.apply_extraction_result")
+    @patch("extract_info.tasks.extract_info_service.find_nearest_category", side_effect=RuntimeError("embedding failed"))
+    @patch("extract_info.tasks.extract_info_service.extract_receipt_text")
+    @patch("extract_info.tasks.receipt_services.update_receipt")
+    def test_process_file_task_routes_enrichment_failure_to_review(
+        self,
+        update_receipt,
+        extract_receipt_text,
+        find_nearest_category,
+        apply_extraction_result,
+        getenv,
+        bot_class,
+        run_async,
+    ):
+        from extract_info.tasks import process_file_task
+
+        extract_receipt_text.return_value = self.ticket()
+        apply_extraction_result.return_value = self.application_result("needs_review")
+        bot_class.return_value.send_message.return_value = "send-message"
+
+        result = process_file_task.run("receipt-id", "missing.jpg", 123, "image")
+
+        self.assertTrue(result)
+        apply_extraction_result.assert_called_once()
+        _, kwargs = apply_extraction_result.call_args
+        self.assertEqual(kwargs["ticket"], extract_receipt_text.return_value)
+        self.assertEqual(kwargs["items"][0].category, "other")
+        self.assertEqual(kwargs["items"][0].category_confidence, 0.0)
+        self.assertIn("needs manual review", bot_class.return_value.send_message.call_args.kwargs["text"])
