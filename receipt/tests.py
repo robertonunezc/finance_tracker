@@ -227,6 +227,32 @@ class ReceiptExtractionValidationTests(TestCase):
         self.assertEqual(result.issues[0]["code"], "source_amount_mismatch")
         self.assertEqual(result.issues[0]["path"], "items[0].price")
 
+    def test_zero_total_requires_review(self):
+        from receipt.extraction_review import validate_receipt_extraction
+
+        payload = self.valid_payload()
+        payload["total"]["value"] = "0.00"
+        payload["total"]["source_text"] = "TOTAL 0.00"
+
+        result = validate_receipt_extraction(payload)
+
+        self.assertTrue(result.requires_review)
+        self.assertEqual(result.issues[0]["code"], "invalid_amount")
+        self.assertEqual(result.issues[0]["path"], "total")
+
+    def test_zero_item_price_requires_review(self):
+        from receipt.extraction_review import validate_receipt_extraction
+
+        payload = self.valid_payload()
+        payload["items"][0]["price"]["value"] = "0.00"
+        payload["items"][0]["price"]["source_text"] = "ITEM 0.00"
+
+        result = validate_receipt_extraction(payload)
+
+        self.assertTrue(result.requires_review)
+        self.assertEqual(result.issues[0]["code"], "invalid_amount")
+        self.assertEqual(result.issues[0]["path"], "items[0].price")
+
     def test_item_sum_mismatch_requires_review(self):
         from receipt.extraction_review import validate_receipt_extraction
 
@@ -565,6 +591,19 @@ class ReceiptReviewCorrectionTests(TestCase):
         self.assertEqual(receipt.status, "needs_review")
         self.assertEqual(result.validation.issues[0]["code"], "invalid_quantity")
 
+    def test_approval_blocks_zero_numeric_defaults(self):
+        from receipt.extraction_review import approve_review
+
+        receipt = self.create_review_receipt()
+        data = self.post_data(total="0.00", price="0.00")
+
+        result = approve_review(str(receipt.receipt_id), data, user="admin")
+
+        receipt.refresh_from_db()
+        self.assertFalse(result.approved)
+        self.assertEqual(receipt.status, "needs_review")
+        self.assertEqual(result.validation.issues[0]["code"], "invalid_amount")
+
 
 class ReceiptReviewViewTests(TestCase):
     def create_staff_user(self):
@@ -633,6 +672,28 @@ class ReceiptReviewViewTests(TestCase):
 
         self.assertContains(response, 'data-field-issues="items[0].price"')
         self.assertContains(response, "low_confidence")
+
+    def test_detail_preserves_missing_numeric_extraction_values_as_blank(self):
+        from receipt.extraction_review import apply_extraction_result
+
+        receipt = Receipt.objects.create(
+            user_id="missing-numeric-user",
+            purchase_date=timezone.now(),
+            total_amount=Decimal("0.00"),
+            image_url="receipt.jpg",
+            status="processing",
+        )
+        payload = ReceiptExtractionValidationTests().valid_payload()
+        payload["total"]["value"] = None
+        payload["items"][0]["price"]["value"] = None
+        apply_extraction_result(str(receipt.receipt_id), payload, items=None)
+        self.client.force_login(self.create_staff_user())
+
+        response = self.client.get(reverse("receipt-review:detail", args=[receipt.receipt_id]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'name="total_amount" type="number" step="0.01" value=""')
+        self.assertContains(response, 'name="item_0_price" type="number" step="0.01" value=""')
 
     def test_staff_can_approve_corrected_receipt(self):
         receipt = self.create_review_receipt()

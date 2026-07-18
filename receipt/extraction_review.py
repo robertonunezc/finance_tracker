@@ -193,11 +193,20 @@ def field_value(field: Any) -> Any:
 
 def _validate_required_receipt_fields(payload: Mapping[str, Any], issues: list[dict[str, Any]]) -> None:
     total = payload.get("total")
-    if _field_decimal(total) is None:
+    total_amount = _field_decimal(total)
+    if total_amount is None:
         issues.append(_issue(
             path="total",
             code="missing_required_value",
             message="Receipt total is required.",
+            extracted_value=_field_raw_value(total),
+            source_text=_field_source(total),
+        ))
+    elif total_amount <= Decimal("0.00"):
+        issues.append(_issue(
+            path="total",
+            code="invalid_amount",
+            message="Receipt total must be greater than zero.",
             extracted_value=_field_raw_value(total),
             source_text=_field_source(total),
         ))
@@ -231,11 +240,20 @@ def _validate_required_item_fields(index: int, item: Mapping[str, Any], issues: 
             source_text=_field_source(name),
         ))
 
-    if _field_decimal(price) is None:
+    price_amount = _field_decimal(price)
+    if price_amount is None:
         issues.append(_issue(
             path=f"items[{index}].price",
             code="missing_required_value",
             message="Item price is required.",
+            extracted_value=_field_raw_value(price),
+            source_text=_field_source(price),
+        ))
+    elif price_amount <= Decimal("0.00"):
+        issues.append(_issue(
+            path=f"items[{index}].price",
+            code="invalid_amount",
+            message="Item price must be greater than zero.",
             extracted_value=_field_raw_value(price),
             source_text=_field_source(price),
         ))
@@ -353,14 +371,14 @@ def _validate_source_amount(path: str, field: Any, issues: list[dict[str, Any]])
 
 def _validate_item_sum(payload: Mapping[str, Any], issues: list[dict[str, Any]]) -> None:
     total = _field_decimal(payload.get("total"))
-    if total is None:
+    if total is None or total <= Decimal("0.00"):
         return
 
     line_total = Decimal("0.00")
     saw_item_price = False
     for item in payload.get("items") or []:
         price = _field_decimal(item.get("price"))
-        if price is None:
+        if price is None or price <= Decimal("0.00"):
             continue
         quantity = _field_positive_int(item.get("quantity"))
         if quantity is None:

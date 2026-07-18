@@ -2,6 +2,7 @@ from celery import shared_task
 import logging
 import os
 import asyncio
+import tempfile
 from decimal import Decimal, InvalidOperation
 from telegram import Bot
 
@@ -94,7 +95,7 @@ def process_file_task(self, receipt_id: str, file_path: str, chat_id: int, file_
         )
         
         # Cleanup temp file
-        if file_path and os.path.exists(file_path):
+        if should_cleanup_processed_file(file_path) and os.path.exists(file_path):
             try:
                 os.unlink(file_path)
             except Exception as e:
@@ -146,3 +147,15 @@ def _positive_item_quantity(value):
     if quantity < 1 or quantity != quantity.to_integral_value():
         return None
     return int(quantity)
+
+
+def should_cleanup_processed_file(file_path: str | None) -> bool:
+    if not file_path or file_path.startswith(("http://", "https://")):
+        return False
+
+    file_realpath = os.path.realpath(file_path)
+    temp_realpath = os.path.realpath(tempfile.gettempdir())
+    try:
+        return os.path.commonpath([file_realpath, temp_realpath]) == temp_realpath
+    except ValueError:
+        return False

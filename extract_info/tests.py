@@ -1,4 +1,6 @@
 from decimal import Decimal
+import os
+import tempfile
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -169,3 +171,46 @@ class ProcessFileTaskReviewIntegrationTests(TestCase):
         self.assertEqual(kwargs["items"][0].category, "other")
         self.assertEqual(kwargs["items"][0].category_confidence, 0.0)
         self.assertIn("needs manual review", bot_class.return_value.send_message.call_args.kwargs["text"])
+
+    def test_cleanup_policy_preserves_local_uploads(self):
+        from extract_info.tasks import should_cleanup_processed_file
+
+        self.assertFalse(should_cleanup_processed_file("media/uploads/receipt.jpg"))
+
+    def test_cleanup_policy_allows_temp_files(self):
+        from extract_info.tasks import should_cleanup_processed_file
+
+        self.assertTrue(should_cleanup_processed_file(os.path.join(tempfile.gettempdir(), "receipt.jpg")))
+
+    @patch("extract_info.tasks.asyncio.run")
+    @patch("extract_info.tasks.Bot")
+    @patch("extract_info.tasks.os.unlink")
+    @patch("extract_info.tasks.os.path.exists", return_value=True)
+    @patch("extract_info.tasks.os.getenv", return_value="bot-token")
+    @patch("extract_info.tasks.extraction_review.apply_extraction_result")
+    @patch("extract_info.tasks.extract_info_service.find_nearest_category")
+    @patch("extract_info.tasks.extract_info_service.extract_receipt_text")
+    @patch("extract_info.tasks.receipt_services.update_receipt")
+    def test_process_file_task_preserves_local_upload_after_review_routing(
+        self,
+        update_receipt,
+        extract_receipt_text,
+        find_nearest_category,
+        apply_extraction_result,
+        getenv,
+        path_exists,
+        unlink,
+        bot_class,
+        run_async,
+    ):
+        from extract_info.tasks import process_file_task
+
+        extract_receipt_text.return_value = self.ticket()
+        find_nearest_category.return_value = ("electronics", [0.1, 0.2])
+        apply_extraction_result.return_value = self.application_result("needs_review")
+        bot_class.return_value.send_message.return_value = "send-message"
+
+        result = process_file_task.run("receipt-id", "media/uploads/receipt.jpg", 123, "image")
+
+        self.assertTrue(result)
+        unlink.assert_not_called()

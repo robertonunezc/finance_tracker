@@ -61,24 +61,15 @@ def review_detail(request, receipt_id):
         return redirect(reverse("receipt-review:detail", args=[receipt.receipt_id]))
 
     issue_map = _group_issues_by_path(review.issues or [])
-    item_rows = [
-        {
-            "index": index,
-            "item": item,
-            "issues": {
-                "name": issue_map.get(f"items[{index}].name", []),
-                "quantity": issue_map.get(f"items[{index}].quantity", []),
-                "price": issue_map.get(f"items[{index}].price", []),
-                "category": issue_map.get(f"items[{index}].category", []),
-            },
-        }
-        for index, item in enumerate(receipt.items.all())
-    ]
+    display_payload = _review_display_payload(receipt, review)
+    item_rows = _build_item_rows(receipt, display_payload, issue_map)
     return render(
         request,
         "receipt/review_detail.html",
         {
             "receipt": receipt,
+            "source_image_url": _source_image_url(receipt.image_url),
+            "receipt_field_values": _receipt_field_values(display_payload),
             "review": review,
             "item_rows": item_rows,
             "category_options": Category.choices,
@@ -98,3 +89,74 @@ def _group_issues_by_path(issues):
     for issue in issues:
         grouped.setdefault(issue.get("path", ""), []).append(issue)
     return grouped
+
+
+def _review_display_payload(receipt, review):
+    if review.corrected_payload:
+        return review.corrected_payload
+    extraction_result = receipt.extraction_result or {}
+    return extraction_result.get("applied_payload") or review.raw_extraction or {}
+
+
+def _receipt_field_values(payload):
+    return {
+        "store_name": _field_display(payload.get("store_name")),
+        "total": _field_display(payload.get("total")),
+        "subtotal": _field_display(payload.get("subtotal")),
+        "discount": _field_display(payload.get("discount")),
+    }
+
+
+def _build_item_rows(receipt, payload, issue_map):
+    payload_items = payload.get("items") or []
+    if payload_items:
+        rows = [
+            {
+                "index": index,
+                "item": {
+                    "name": _field_display(item.get("name")),
+                    "quantity": _field_display(item.get("quantity"), default="1"),
+                    "price": _field_display(item.get("price")),
+                    "category": _field_display(item.get("category"), default=Category.OTHER),
+                },
+            }
+            for index, item in enumerate(payload_items)
+        ]
+    else:
+        rows = [
+            {
+                "index": index,
+                "item": {
+                    "name": item.name,
+                    "quantity": str(item.quantity),
+                    "price": f"{item.price:.2f}",
+                    "category": item.category,
+                },
+            }
+            for index, item in enumerate(receipt.items.all())
+        ]
+
+    for row in rows:
+        index = row["index"]
+        row["issues"] = {
+            "name": issue_map.get(f"items[{index}].name", []),
+            "quantity": issue_map.get(f"items[{index}].quantity", []),
+            "price": issue_map.get(f"items[{index}].price", []),
+            "category": issue_map.get(f"items[{index}].category", []),
+        }
+    return rows
+
+
+def _field_display(field, *, default=""):
+    value = extraction_review.field_value(field)
+    if value in (None, ""):
+        return default
+    return str(value)
+
+
+def _source_image_url(image_url):
+    if not image_url:
+        return ""
+    if image_url.startswith(("http://", "https://", "/")):
+        return image_url
+    return f"/{image_url}"
