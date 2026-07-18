@@ -228,6 +228,43 @@ class ReceiptExtractionValidationTests(TestCase):
         self.assertEqual(result.issues[0]["code"], "source_amount_mismatch")
         self.assertEqual(result.issues[0]["path"], "items[0].price")
 
+    def test_blank_total_source_evidence_requires_review(self):
+        from receipt.extraction_review import validate_receipt_extraction
+
+        payload = self.valid_payload()
+        payload["total"]["source_text"] = ""
+
+        result = validate_receipt_extraction(payload)
+
+        self.assertTrue(result.requires_review)
+        self.assertEqual(result.issues[0]["code"], "missing_source_evidence")
+        self.assertEqual(result.issues[0]["path"], "total")
+
+    def test_non_amount_item_price_source_evidence_requires_review(self):
+        from receipt.extraction_review import validate_receipt_extraction
+
+        payload = self.valid_payload()
+        payload["items"][0]["price"]["source_text"] = "AMZN MX MARKETPLACE"
+
+        result = validate_receipt_extraction(payload)
+
+        self.assertTrue(result.requires_review)
+        self.assertEqual(result.issues[0]["code"], "missing_source_evidence")
+        self.assertEqual(result.issues[0]["path"], "items[0].price")
+
+    def test_human_reviewed_amount_can_skip_source_evidence(self):
+        from receipt.extraction_review import validate_receipt_extraction
+
+        payload = self.valid_payload()
+        payload["total"]["source_text"] = ""
+        payload["total"]["reviewed"] = True
+        payload["items"][0]["price"]["source_text"] = ""
+        payload["items"][0]["price"]["reviewed"] = True
+
+        result = validate_receipt_extraction(payload)
+
+        self.assertFalse(result.requires_review)
+
     def test_zero_total_requires_review(self):
         from receipt.extraction_review import validate_receipt_extraction
 

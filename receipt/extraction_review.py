@@ -357,6 +357,13 @@ def _validate_source_amount(path: str, field: Any, issues: list[dict[str, Any]])
     source_text = _field_source(field)
     source_amounts = parse_amounts_from_source_text(source_text)
     if not source_amounts:
+        issues.append(_issue(
+            path=path,
+            code="missing_source_evidence",
+            message="Amount source evidence is missing or does not contain a parseable amount.",
+            extracted_value=str(extracted_amount),
+            source_text=source_text,
+        ))
         return
 
     if extracted_amount not in source_amounts:
