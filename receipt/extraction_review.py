@@ -13,6 +13,7 @@ from receipt.models import Category, Receipt, ReceiptExtractionReview, ReceiptIt
 
 CONFIDENCE_THRESHOLD = 0.80
 ITEM_TOTAL_TOLERANCE = Decimal("1.00")
+OPTIONAL_CONFIDENCE_PATHS = {"subtotal", "discount"}
 logger = logging.getLogger(__name__)
 
 
@@ -257,11 +258,16 @@ def _collect_field_confidence(
     issues: list[dict[str, Any]],
     confidences: list[float],
 ) -> None:
+    if path in OPTIONAL_CONFIDENCE_PATHS and _field_is_blank(field):
+        return
+
     if not isinstance(field, Mapping):
+        _add_missing_confidence_issue(path, field, issues, confidences)
         return
 
     confidence = field.get("confidence")
     if confidence is None:
+        _add_missing_confidence_issue(path, field, issues, confidences)
         return
 
     try:
@@ -279,6 +285,22 @@ def _collect_field_confidence(
             extracted_value=_field_raw_value(field),
             source_text=_field_source(field),
         ))
+
+
+def _add_missing_confidence_issue(
+    path: str,
+    field: Any,
+    issues: list[dict[str, Any]],
+    confidences: list[float],
+) -> None:
+    confidences.append(0.0)
+    issues.append(_issue(
+        path=path,
+        code="missing_confidence",
+        message="Field confidence metadata is missing.",
+        extracted_value=_field_raw_value(field),
+        source_text=_field_source(field),
+    ))
 
 
 def _validate_source_amount(path: str, field: Any, issues: list[dict[str, Any]]) -> None:
@@ -352,6 +374,10 @@ def _field_decimal(field: Any) -> Decimal | None:
         return Decimal(str(value).replace(",", "")).quantize(Decimal("0.01"))
     except (InvalidOperation, ValueError):
         return None
+
+
+def _field_is_blank(field: Any) -> bool:
+    return str(_field_raw_value(field) or "").strip() == ""
 
 
 def _issue(
@@ -531,6 +557,12 @@ def _build_corrected_payload(
     form_data: Mapping[str, Any],
     raw_extraction: Mapping[str, Any],
 ) -> dict[str, Any]:
+    items = []
+    for index in range(_form_int(form_data.get("item_count"), default=0)):
+        if _form_truthy(form_data.get(f"item_{index}_delete")):
+            continue
+        items.append(_corrected_item(form_data, raw_extraction, index))
+
     return {
         "store_name": _corrected_field(
             form_data.get("store_name"),
@@ -548,10 +580,7 @@ def _build_corrected_payload(
             form_data.get("total_amount"),
             raw_extraction.get("total"),
         ),
-        "items": [
-            _corrected_item(form_data, raw_extraction, index)
-            for index in range(_form_int(form_data.get("item_count"), default=0))
-        ],
+        "items": items,
     }
 
 
@@ -584,6 +613,10 @@ def _form_int(value: Any, *, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _form_truthy(value: Any) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _user_label(user: Any) -> str:

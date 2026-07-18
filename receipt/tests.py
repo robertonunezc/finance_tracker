@@ -171,6 +171,29 @@ class ReceiptExtractionValidationTests(TestCase):
         self.assertEqual(result.issues[0]["code"], "low_confidence")
         self.assertEqual(result.issues[0]["path"], "items[0].price")
 
+    def test_missing_required_confidence_requires_review(self):
+        from receipt.extraction_review import validate_receipt_extraction
+
+        payload = self.valid_payload()
+        del payload["total"]["confidence"]
+
+        result = validate_receipt_extraction(payload)
+
+        self.assertTrue(result.requires_review)
+        self.assertEqual(result.issues[0]["code"], "missing_confidence")
+        self.assertEqual(result.issues[0]["path"], "total")
+
+    def test_absent_optional_amount_confidence_does_not_require_review(self):
+        from receipt.extraction_review import validate_receipt_extraction
+
+        payload = self.valid_payload()
+        payload["subtotal"] = {"value": "", "source_text": ""}
+        payload["discount"] = {"value": None, "source_text": ""}
+
+        result = validate_receipt_extraction(payload)
+
+        self.assertFalse(result.requires_review)
+
     def test_source_amount_mismatch_requires_review(self):
         from receipt.extraction_review import validate_receipt_extraction
 
@@ -362,6 +385,7 @@ class ReceiptReviewCorrectionTests(TestCase):
             "subtotal_amount": "",
             "discount_amount": "",
             "item_count": "1",
+            "item_0_delete": "0",
             "item_0_name": "AMZN MX MARKETPLACE",
             "item_0_price": price,
             "item_0_quantity": "1",
@@ -426,6 +450,36 @@ class ReceiptReviewCorrectionTests(TestCase):
         self.assertTrue(result.approved)
         self.assertEqual(receipt.status, "completed")
 
+    def test_approval_can_add_and_remove_item_rows(self):
+        from receipt.extraction_review import approve_review
+
+        receipt = self.create_review_receipt()
+        data = self.post_data(total="1249.00")
+        data.update({
+            "item_count": "3",
+            "item_0_delete": "1",
+            "item_1_delete": "0",
+            "item_1_name": "Keyboard",
+            "item_1_price": "600.00",
+            "item_1_quantity": "1",
+            "item_1_category": "electronics",
+            "item_2_delete": "0",
+            "item_2_name": "Mouse",
+            "item_2_price": "649.00",
+            "item_2_quantity": "1",
+            "item_2_category": "electronics",
+        })
+
+        result = approve_review(str(receipt.receipt_id), data, user="admin")
+
+        receipt.refresh_from_db()
+        self.assertTrue(result.approved)
+        self.assertEqual(receipt.items.count(), 2)
+        self.assertEqual(
+            list(receipt.items.order_by("id").values_list("name", flat=True)),
+            ["Keyboard", "Mouse"],
+        )
+
 
 class ReceiptReviewViewTests(TestCase):
     def create_staff_user(self):
@@ -474,6 +528,17 @@ class ReceiptReviewViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Receipt reviews")
         self.assertContains(response, "AMZN MX MARKETPLACE")
+
+    def test_detail_exposes_item_add_remove_controls(self):
+        receipt = self.create_review_receipt()
+        self.client.force_login(self.create_staff_user())
+
+        response = self.client.get(reverse("receipt-review:detail", args=[receipt.receipt_id]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'data-add-item')
+        self.assertContains(response, 'name="item_0_delete"')
+        self.assertContains(response, 'data-remove-item')
 
     def test_staff_can_approve_corrected_receipt(self):
         receipt = self.create_review_receipt()
