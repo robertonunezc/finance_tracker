@@ -6,6 +6,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.urls import reverse
 from django.test import TestCase
@@ -663,6 +664,40 @@ class ReceiptReviewViewTests(TestCase):
         self.assertContains(response, 'data-add-item')
         self.assertContains(response, 'name="item_0_delete"')
         self.assertContains(response, 'data-remove-item')
+
+    def test_detail_uses_staff_source_url_for_image(self):
+        receipt = self.create_review_receipt()
+        self.client.force_login(self.create_staff_user())
+
+        response = self.client.get(reverse("receipt-review:detail", args=[receipt.receipt_id]))
+
+        self.assertContains(response, reverse("receipt-review:source", args=[receipt.receipt_id]))
+
+    def test_source_image_requires_staff(self):
+        receipt = self.create_review_receipt()
+        self.client.force_login(self.create_regular_user())
+
+        response = self.client.get(reverse("receipt-review:source", args=[receipt.receipt_id]))
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/admin/login/", response["Location"])
+
+    def test_staff_can_load_local_source_image(self):
+        receipt = self.create_review_receipt()
+        source_path = settings.MEDIA_ROOT / "uploads" / "review-source.jpg"
+        os.makedirs(source_path.parent, exist_ok=True)
+        with open(source_path, "wb") as source_file:
+            source_file.write(b"jpeg-bytes")
+        self.addCleanup(lambda: source_path.exists() and source_path.unlink())
+        receipt.image_url = "media/uploads/review-source.jpg"
+        receipt.save(update_fields=["image_url"])
+        self.client.force_login(self.create_staff_user())
+
+        response = self.client.get(reverse("receipt-review:source", args=[receipt.receipt_id]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(b"".join(response.streaming_content), b"jpeg-bytes")
+        self.assertEqual(response["Content-Type"], "image/jpeg")
 
     def test_detail_renders_field_level_issue_badges(self):
         receipt = self.create_review_receipt()

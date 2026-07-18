@@ -1,6 +1,12 @@
+import mimetypes
+from pathlib import Path
+from urllib.parse import unquote, urlparse
+
+from django.conf import settings
 from django.contrib import messages
 from django.contrib.admin.views.decorators import staff_member_required
 from django.db.models import Count
+from django.http import FileResponse, Http404
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 
@@ -68,7 +74,7 @@ def review_detail(request, receipt_id):
         "receipt/review_detail.html",
         {
             "receipt": receipt,
-            "source_image_url": _source_image_url(receipt.image_url),
+            "source_image_url": _source_image_url(receipt),
             "receipt_field_values": _receipt_field_values(display_payload),
             "review": review,
             "item_rows": item_rows,
@@ -82,6 +88,21 @@ def review_detail(request, receipt_id):
             },
         },
     )
+
+
+@staff_member_required
+def review_source(request, receipt_id):
+    receipt = get_object_or_404(Receipt, receipt_id=receipt_id)
+    image_url = receipt.image_url or ""
+    if image_url.startswith(("http://", "https://")):
+        return redirect(image_url)
+
+    source_path = _local_source_path(image_url)
+    if not source_path or not source_path.is_file():
+        raise Http404("Receipt source image not found.")
+
+    content_type, _ = mimetypes.guess_type(source_path.name)
+    return FileResponse(open(source_path, "rb"), content_type=content_type or "application/octet-stream")
 
 
 def _group_issues_by_path(issues):
@@ -154,9 +175,26 @@ def _field_display(field, *, default=""):
     return str(value)
 
 
-def _source_image_url(image_url):
-    if not image_url:
+def _source_image_url(receipt):
+    if not receipt.image_url:
         return ""
-    if image_url.startswith(("http://", "https://", "/")):
-        return image_url
-    return f"/{image_url}"
+    return reverse("receipt-review:source", args=[receipt.receipt_id])
+
+
+def _local_source_path(image_url):
+    parsed = urlparse(image_url)
+    if parsed.scheme or parsed.netloc:
+        return None
+
+    relative_path = unquote(parsed.path).lstrip("/")
+    media_prefix = str(settings.MEDIA_URL).strip("/")
+    if media_prefix and relative_path.startswith(f"{media_prefix}/"):
+        relative_path = relative_path[len(media_prefix) + 1:]
+
+    media_root = Path(settings.MEDIA_ROOT).resolve()
+    candidate = (media_root / relative_path).resolve()
+    try:
+        candidate.relative_to(media_root)
+    except ValueError:
+        return None
+    return candidate
