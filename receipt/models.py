@@ -16,6 +16,7 @@ REVIEW_STATUS_CHOICES = [
 
 
 class Category(models.TextChoices):
+    TOYS = 'toys', 'Juguetes'
     GROCERIES = 'groceries', 'Abarrotes'
     BEVERAGES = 'beverages', 'Bebidas'
     ALCOHOL = 'alcohol', 'Bebidas Alcohólicas'

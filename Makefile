@@ -47,4 +47,4 @@ run_bot:
 	python -m watchfiles "python telegram_bot/main.py"
 
 celery:
-	watchfiles "celery -A finance_tracker worker --loglevel=info"
+	watchfiles ".venv/bin/celery -A finance_tracker worker --loglevel=info --pool=solo"
