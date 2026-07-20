@@ -4,7 +4,7 @@ from unittest.mock import Mock, patch
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
@@ -78,6 +78,24 @@ class ReceiptItemsTicketImageTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(b"".join(response.streaming_content), b"jpeg-bytes")
+        self.assertEqual(response["Content-Type"], "image/jpeg")
+
+    @override_settings(MEDIA_ROOT=settings.BASE_DIR / "alternate-media")
+    def test_logged_in_user_can_load_project_relative_media_path(self):
+        receipt = self.create_completed_receipt(
+            image_url="media/uploads/AgACAgEAAxkBAAIBg2paRiHo30TbnrHAAr93d-FZc9G6AAIBC2sbeYPQTsTsx0Hu3FcHAQADAgADeQADPQQ.jpg"
+        )
+        source_path = settings.BASE_DIR / receipt.image_url
+        os.makedirs(source_path.parent, exist_ok=True)
+        with open(source_path, "wb") as source_file:
+            source_file.write(b"project-relative-jpeg")
+        self.addCleanup(lambda: source_path.exists() and source_path.unlink())
+        self.client.force_login(self.create_user())
+
+        response = self.client.get(self.ticket_image_path(receipt))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(b"".join(response.streaming_content), b"project-relative-jpeg")
         self.assertEqual(response["Content-Type"], "image/jpeg")
 
     @patch("reports.views.requests.get")

@@ -100,15 +100,33 @@ def _local_ticket_image_path(image_url):
     if parsed.scheme or parsed.netloc:
         return None
 
-    relative_path = unquote(parsed.path).lstrip("/")
+    stored_path = unquote(parsed.path).lstrip("/")
+    if not stored_path:
+        return None
+
+    media_relative_path = stored_path
     media_prefix = str(settings.MEDIA_URL).strip("/")
-    if media_prefix and relative_path.startswith(f"{media_prefix}/"):
-        relative_path = relative_path[len(media_prefix) + 1:]
+    if media_prefix and media_relative_path.startswith(f"{media_prefix}/"):
+        media_relative_path = media_relative_path[len(media_prefix) + 1:]
 
     media_root = Path(settings.MEDIA_ROOT).resolve()
-    candidate = (media_root / relative_path).resolve()
+    base_dir = Path(settings.BASE_DIR).resolve()
+    candidates = [
+        _safe_local_ticket_path(media_root, media_relative_path),
+        _safe_local_ticket_path(base_dir, stored_path),
+        _safe_local_ticket_path(base_dir, media_relative_path),
+    ]
+    safe_candidates = [candidate for candidate in candidates if candidate is not None]
+    for candidate in safe_candidates:
+        if candidate.is_file():
+            return candidate
+    return safe_candidates[0] if safe_candidates else None
+
+
+def _safe_local_ticket_path(base_path, relative_path):
+    candidate = (base_path / relative_path).resolve()
     try:
-        candidate.relative_to(media_root)
+        candidate.relative_to(base_path)
     except ValueError:
         return None
     return candidate
