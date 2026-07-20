@@ -13,6 +13,8 @@
 .item-report-table td:first-child { min-width:14rem; }
 .item-report-table td:nth-child(3) { min-width:10rem; }
 .item-report-table th, .item-report-table td { white-space:nowrap; }
+.ticket-image-link { font-weight:600; text-decoration:none; }
+.ticket-image-link:hover, .ticket-image-link:focus { text-decoration:underline; text-underline-offset:.2rem; }
 .empty-state { align-items:center; display:flex; flex-direction:column; justify-content:center; min-height:350px; text-align:center; }
 .empty-icon { align-items:center; background:#eef0ff; border-radius:50%; color:var(--brand); display:flex; font-size:1.6rem; font-weight:700; height:4rem; justify-content:center; margin-bottom:1rem; width:4rem; }
 @media (max-width:575.98px) { .display-6{font-size:2rem}.chart-wrap{height:310px}.range-switch .btn{min-width:auto} }

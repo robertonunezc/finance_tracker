@@ -88,6 +88,7 @@
               <th>Item</th>
               <th>Category</th>
               <th>Store</th>
+              <th>Ticket</th>
               <th>Date</th>
               <th class="text-end">Qty</th>
               <th class="text-end">Unit price</th>
@@ -100,6 +101,13 @@
                 <td class="fw-semibold">{{ row.name }}</td>
                 <td>{{ row.category_label }}</td>
                 <td>{{ row.store_name }}</td>
+                <td>
+                  {% if row.has_ticket_image %}
+                    <a class="ticket-image-link" href="{% url 'reports:receipt-ticket-image' row.receipt_id %}" target="_blank" rel="noopener noreferrer">Open</a>
+                  {% else %}
+                    <span class="text-secondary">-</span>
+                  {% endif %}
+                </td>
                 <td>{{ row.purchase_date|date:"M j, Y" }}</td>
                 <td class="text-end">{{ row.quantity }}</td>
                 <td class="text-end">${{ row.unit_price|floatformat:2|intcomma }}</td>

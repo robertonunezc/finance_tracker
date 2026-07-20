@@ -30,10 +30,12 @@ class CategorySpendingReport:
 
 @dataclass(frozen=True)
 class ReceiptItemReportRow:
+    receipt_id: str
     name: str
     category: str
     category_label: str
     store_name: str
+    has_ticket_image: bool
     purchase_date: datetime
     quantity: int
     unit_price: Decimal
@@ -272,12 +274,14 @@ class ReceiptItemsService:
         labels = dict(Category.choices)
         return [
             ReceiptItemReportRow(
+                receipt_id=str(item.receipt.receipt_id),
                 name=item.name,
                 category=item.category,
                 category_label=labels.get(
                     item.category, item.category.replace("_", " ").title()
                 ),
                 store_name=item.receipt.store_name or "Unknown store",
+                has_ticket_image=bool(item.receipt.image_url),
                 purchase_date=item.receipt.purchase_date,
                 quantity=item.quantity,
                 unit_price=Decimal(str(item.price)),
