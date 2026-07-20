@@ -3,6 +3,7 @@ import hashlib
 import os
 import tempfile
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -132,6 +133,123 @@ class ReceiptDuplicateActionTests(TestCase):
             "waiting for manual review",
             message.reply_text.call_args.args[0],
         )
+
+
+class ReceiptUploadPreparationTests(TestCase):
+    class DummyUploadService:
+        def __init__(self):
+            self.uploads = []
+
+        def upload_file(self, file_path, object_name):
+            self.uploads.append((file_path, object_name))
+            return f"media/uploads/{object_name}"
+
+    def write_upload_file(self, content=b"receipt bytes", suffix=".jpg"):
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+        temp_file.write(content)
+        temp_file.close()
+        self.addCleanup(lambda: os.path.exists(temp_file.name) and os.unlink(temp_file.name))
+        return temp_file.name
+
+    def upload_request(self, *, user_id="manual-user", content=b"receipt bytes", filename="receipt.jpg", file_type="image"):
+        from receipt.dataclasses import ReceiptUploadRequest
+
+        return ReceiptUploadRequest(
+            user_id=user_id,
+            source_file_path=self.write_upload_file(content=content, suffix=Path(filename).suffix),
+            original_filename=filename,
+            file_type=file_type,
+        )
+
+    def test_new_image_upload_creates_pending_receipt_and_should_enqueue(self):
+        request = self.upload_request(filename="receipt.jpg", file_type="image")
+        upload_service = self.DummyUploadService()
+
+        result = receipt_services.prepare_receipt_upload(request, upload_service=upload_service)
+
+        receipt = Receipt.objects.get(receipt_id=result.receipt_id)
+        self.assertEqual(result.action, "created")
+        self.assertEqual(result.status, "pending")
+        self.assertEqual(result.file_type, "image")
+        self.assertTrue(result.should_enqueue)
+        self.assertEqual(receipt.status, "pending")
+        self.assertEqual(receipt.file_hash, result.file_hash)
+        self.assertTrue(result.image_url.startswith("media/uploads/"))
+        self.assertEqual(len(upload_service.uploads), 1)
+        self.assertEqual(Path(upload_service.uploads[0][1]).suffix, ".jpg")
+
+    def test_new_pdf_upload_preserves_pdf_file_type_for_processing(self):
+        request = self.upload_request(content=b"%PDF-1.4", filename="statement.pdf", file_type="pdf")
+        upload_service = self.DummyUploadService()
+
+        result = receipt_services.prepare_receipt_upload(request, upload_service=upload_service)
+
+        self.assertEqual(result.action, "created")
+        self.assertEqual(result.file_type, "pdf")
+        self.assertTrue(result.should_enqueue)
+        self.assertEqual(Path(upload_service.uploads[0][1]).suffix, ".pdf")
+
+    def test_completed_duplicate_skips_upload_and_enqueue(self):
+        first = receipt_services.prepare_receipt_upload(
+            self.upload_request(content=b"same bytes"),
+            upload_service=self.DummyUploadService(),
+        )
+        receipt_services.update_receipt(first.receipt_id, status="completed")
+        duplicate_service = self.DummyUploadService()
+
+        result = receipt_services.prepare_receipt_upload(
+            self.upload_request(content=b"same bytes"),
+            upload_service=duplicate_service,
+        )
+
+        self.assertEqual(result.receipt_id, first.receipt_id)
+        self.assertEqual(result.action, "skip_completed")
+        self.assertEqual(result.status, "completed")
+        self.assertFalse(result.should_enqueue)
+        self.assertEqual(duplicate_service.uploads, [])
+
+    def test_in_progress_duplicates_skip_enqueue(self):
+        for status in ("pending", "processing", "needs_review"):
+            with self.subTest(status=status):
+                request = self.upload_request(user_id=f"user-{status}", content=f"bytes-{status}".encode())
+                first = receipt_services.prepare_receipt_upload(request, upload_service=self.DummyUploadService())
+                receipt_services.update_receipt(first.receipt_id, status=status)
+                duplicate_service = self.DummyUploadService()
+
+                result = receipt_services.prepare_receipt_upload(
+                    self.upload_request(user_id=f"user-{status}", content=f"bytes-{status}".encode()),
+                    upload_service=duplicate_service,
+                )
+
+                self.assertEqual(result.receipt_id, first.receipt_id)
+                self.assertIn(result.action, {"skip_in_progress", "skip_needs_review"})
+                self.assertEqual(result.status, status)
+                self.assertFalse(result.should_enqueue)
+                self.assertEqual(duplicate_service.uploads, [])
+
+    def test_failed_duplicate_retries_existing_receipt(self):
+        first = receipt_services.prepare_receipt_upload(
+            self.upload_request(content=b"retry bytes"),
+            upload_service=self.DummyUploadService(),
+        )
+        original_image_url = first.image_url
+        receipt_services.update_receipt(first.receipt_id, status="failed")
+        retry_service = self.DummyUploadService()
+
+        result = receipt_services.prepare_receipt_upload(
+            self.upload_request(content=b"retry bytes", filename="retry.png"),
+            upload_service=retry_service,
+        )
+
+        receipt = Receipt.objects.get(receipt_id=first.receipt_id)
+        self.assertEqual(result.receipt_id, first.receipt_id)
+        self.assertEqual(result.action, "retry")
+        self.assertEqual(result.status, "pending")
+        self.assertTrue(result.should_enqueue)
+        self.assertEqual(receipt.status, "pending")
+        self.assertNotEqual(receipt.image_url, original_image_url)
+        self.assertEqual(len(retry_service.uploads), 1)
+        self.assertEqual(Path(retry_service.uploads[0][1]).suffix, ".png")
 
 
 class ReceiptExtractionValidationTests(TestCase):

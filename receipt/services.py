@@ -1,11 +1,14 @@
 import hashlib
+import uuid
+from pathlib import Path
 
+from handle_files.services.upload import UploadServiceFactory
 from .models import Receipt, ReceiptItem
 from typing import List, Optional
 from decimal import Decimal
 from django.db import IntegrityError, transaction
 from django.utils import timezone
-from .dataclasses import ReceiptData, ReceiptLookupResult
+from .dataclasses import ReceiptData, ReceiptLookupResult, ReceiptUploadRequest, ReceiptUploadResult
 from pgvector.django import CosineDistance
 
 
@@ -26,6 +29,99 @@ def compute_file_sha256(file_path: str) -> str:
         for chunk in iter(lambda: file_obj.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def get_receipt_duplicate_action(status: str) -> str:
+    if status == "completed":
+        return "skip_completed"
+    if status in {"pending", "processing"}:
+        return "skip_in_progress"
+    if status == "needs_review":
+        return "skip_needs_review"
+    if status == "failed":
+        return "retry"
+    return "retry"
+
+
+def prepare_receipt_upload(request: ReceiptUploadRequest, upload_service=None) -> ReceiptUploadResult:
+    if request.file_type not in {"image", "pdf"}:
+        raise ValueError(f"Unsupported receipt upload file type: {request.file_type}")
+
+    file_hash = compute_file_sha256(request.source_file_path)
+    existing_receipt = get_receipt_by_user_and_file_hash(request.user_id, file_hash)
+    if existing_receipt:
+        action = get_receipt_duplicate_action(existing_receipt.status)
+        if action != "retry":
+            return _receipt_upload_result(existing_receipt, action, request.file_type, should_enqueue=False)
+        return _retry_receipt_upload(request, existing_receipt, file_hash, upload_service)
+
+    uploaded_url = _upload_receipt_source_file(request, upload_service)
+    created_receipt = create_receipt_with_file_hash(
+        ReceiptData(
+            user_id=request.user_id,
+            image_url=uploaded_url,
+            status="pending",
+        ),
+        file_hash,
+    )
+    if created_receipt.created:
+        return _receipt_upload_result(created_receipt, "created", request.file_type, should_enqueue=True)
+
+    action = get_receipt_duplicate_action(created_receipt.status)
+    if action != "retry":
+        return _receipt_upload_result(created_receipt, action, request.file_type, should_enqueue=False)
+    return _retry_receipt_upload(request, created_receipt, file_hash, upload_service)
+
+
+def _retry_receipt_upload(
+    request: ReceiptUploadRequest,
+    receipt: ReceiptLookupResult,
+    file_hash: str,
+    upload_service=None,
+) -> ReceiptUploadResult:
+    uploaded_url = _upload_receipt_source_file(request, upload_service)
+    update_receipt(receipt.receipt_id, image_url=uploaded_url, status="pending")
+    return ReceiptUploadResult(
+        receipt_id=receipt.receipt_id,
+        user_id=receipt.user_id,
+        image_url=uploaded_url,
+        status="pending",
+        action="retry",
+        file_hash=file_hash,
+        file_type=request.file_type,
+        should_enqueue=True,
+    )
+
+
+def _receipt_upload_result(
+    receipt: ReceiptLookupResult,
+    action: str,
+    file_type: str,
+    *,
+    should_enqueue: bool,
+) -> ReceiptUploadResult:
+    return ReceiptUploadResult(
+        receipt_id=receipt.receipt_id,
+        user_id=receipt.user_id,
+        image_url=receipt.image_url,
+        status=receipt.status,
+        action=action,
+        file_hash=receipt.file_hash or "",
+        file_type=file_type,
+        should_enqueue=should_enqueue,
+    )
+
+
+def _upload_receipt_source_file(request: ReceiptUploadRequest, upload_service=None) -> str:
+    service = upload_service or UploadServiceFactory.create("local")
+    return service.upload_file(request.source_file_path, _receipt_upload_object_name(request.original_filename))
+
+
+def _receipt_upload_object_name(original_filename: str) -> str:
+    suffix = Path(original_filename or "").suffix.lower()
+    if not suffix:
+        suffix = ".bin"
+    return f"{uuid.uuid4().hex}{suffix}"
 
 
 def get_receipt_by_user_and_file_hash(user_id: str, file_hash: str) -> Optional[ReceiptLookupResult]:

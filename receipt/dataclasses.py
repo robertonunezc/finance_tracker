@@ -33,3 +33,23 @@ class ReceiptLookupResult:
     status: str
     created: bool
     file_hash: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class ReceiptUploadRequest:
+    user_id: str
+    source_file_path: str
+    original_filename: str
+    file_type: str
+
+
+@dataclass(frozen=True)
+class ReceiptUploadResult:
+    receipt_id: str
+    user_id: str
+    image_url: str
+    status: str
+    action: str
+    file_hash: str
+    file_type: str
+    should_enqueue: bool
