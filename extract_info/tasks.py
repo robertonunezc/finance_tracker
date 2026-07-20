@@ -25,7 +25,7 @@ def mark_receipt_failed(receipt_id: str, bot_token: str | None = None, chat_id: 
 
 
 @shared_task(bind=True, max_retries=3, autoretry_for=(Exception,), retry_backoff=True)
-def process_file_task(self, receipt_id: str, file_path: str, chat_id: int, file_type: str):
+def process_file_task(self, receipt_id: str, file_path: str, chat_id: int | None = None, file_type: str = "image"):
     """
     Background task to process a receipt file (image, audio, or pdf).
     file_path is the relative path in the media volume.

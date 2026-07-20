@@ -1,4 +1,7 @@
+import logging
 import mimetypes
+import os
+import tempfile
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -10,8 +13,75 @@ from django.http import FileResponse, Http404
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 
+from extract_info.tasks import process_file_task
 from receipt import extraction_review
+from receipt import services as receipt_services
+from receipt.dataclasses import ReceiptUploadRequest
+from receipt.forms import ReceiptUploadForm
 from receipt.models import Category, Receipt, ReceiptExtractionReview
+
+logger = logging.getLogger(__name__)
+
+
+@staff_member_required
+def upload(request):
+    if request.method == "POST":
+        form = ReceiptUploadForm(request.POST, request.FILES)
+        if form.is_valid():
+            temp_file_path = None
+            uploaded_file = form.cleaned_data["document"]
+            try:
+                temp_file_path = _write_uploaded_receipt_file(uploaded_file)
+                result = receipt_services.prepare_receipt_upload(
+                    ReceiptUploadRequest(
+                        user_id=_receipt_upload_user_id(request.user),
+                        source_file_path=temp_file_path,
+                        original_filename=uploaded_file.name,
+                        file_type=form.cleaned_data["file_type"],
+                    )
+                )
+                if result.should_enqueue:
+                    process_file_task.delay(
+                        receipt_id=result.receipt_id,
+                        file_path=result.image_url,
+                        chat_id=None,
+                        file_type=result.file_type,
+                    )
+                    messages.success(
+                        request,
+                        f"Receipt {result.receipt_id} uploaded successfully and queued for processing.",
+                    )
+                else:
+                    messages.info(
+                        request,
+                        f"Receipt {result.receipt_id} already exists with status {result.status}.",
+                    )
+                return redirect(reverse("receipt-review:upload"))
+            except Exception:
+                logger.exception("Manual receipt upload failed")
+                form.add_error("document", "Could not upload the file. Please try again.")
+            finally:
+                if temp_file_path and os.path.exists(temp_file_path):
+                    try:
+                        os.unlink(temp_file_path)
+                    except OSError:
+                        logger.warning("Failed to remove temporary upload file %s", temp_file_path)
+    else:
+        form = ReceiptUploadForm()
+
+    return render(request, "receipt/upload.html", {"form": form})
+
+
+def _write_uploaded_receipt_file(uploaded_file):
+    suffix = Path(uploaded_file.name or "").suffix.lower()
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+        for chunk in uploaded_file.chunks():
+            temp_file.write(chunk)
+        return temp_file.name
+
+
+def _receipt_upload_user_id(user):
+    return user.get_username() or str(user.pk)
 
 
 @staff_member_required

@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.urls import reverse
 from django.test import TestCase
 from django.utils import timezone
@@ -897,6 +898,114 @@ class ReceiptReviewViewTests(TestCase):
         receipt.refresh_from_db()
         self.assertEqual(response.status_code, 302)
         self.assertEqual(receipt.status, "completed")
+
+
+class ReceiptManualUploadViewTests(TestCase):
+    def create_staff_user(self):
+        return get_user_model().objects.create_user(
+            username="staff-uploader",
+            password="password",
+            is_staff=True,
+        )
+
+    def create_regular_user(self):
+        return get_user_model().objects.create_user(
+            username="regular-uploader",
+            password="password",
+            is_staff=False,
+        )
+
+    def upload_url(self):
+        return reverse("receipt-review:upload")
+
+    def service_result(self, *, file_type="image", action="created", should_enqueue=True, status="pending"):
+        from receipt.dataclasses import ReceiptUploadResult
+
+        return ReceiptUploadResult(
+            receipt_id="00000000-0000-0000-0000-000000000001",
+            user_id="staff-uploader",
+            image_url="media/uploads/source.jpg" if file_type == "image" else "media/uploads/source.pdf",
+            status=status,
+            action=action,
+            file_hash="a" * 64,
+            file_type=file_type,
+            should_enqueue=should_enqueue,
+        )
+
+    def test_upload_page_requires_staff(self):
+        self.client.force_login(self.create_regular_user())
+
+        response = self.client.get(self.upload_url())
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/admin/login/", response["Location"])
+
+    @patch("receipt.views.process_file_task.delay")
+    @patch("receipt.views.receipt_services.prepare_receipt_upload")
+    def test_staff_image_upload_enqueues_processing(self, prepare_receipt_upload, delay):
+        prepare_receipt_upload.return_value = self.service_result(file_type="image")
+        self.client.force_login(self.create_staff_user())
+        uploaded_file = SimpleUploadedFile("receipt.jpg", b"receipt bytes", content_type="image/jpeg")
+
+        response = self.client.post(self.upload_url(), {"document": uploaded_file})
+
+        self.assertRedirects(response, self.upload_url())
+        request = prepare_receipt_upload.call_args.args[0]
+        self.assertEqual(request.user_id, "staff-uploader")
+        self.assertEqual(request.original_filename, "receipt.jpg")
+        self.assertEqual(request.file_type, "image")
+        delay.assert_called_once_with(
+            receipt_id="00000000-0000-0000-0000-000000000001",
+            file_path="media/uploads/source.jpg",
+            chat_id=None,
+            file_type="image",
+        )
+
+    @patch("receipt.views.process_file_task.delay")
+    @patch("receipt.views.receipt_services.prepare_receipt_upload")
+    def test_staff_pdf_upload_enqueues_pdf_processing(self, prepare_receipt_upload, delay):
+        prepare_receipt_upload.return_value = self.service_result(file_type="pdf")
+        self.client.force_login(self.create_staff_user())
+        uploaded_file = SimpleUploadedFile("statement.pdf", b"%PDF-1.4", content_type="application/pdf")
+
+        response = self.client.post(self.upload_url(), {"document": uploaded_file})
+
+        self.assertRedirects(response, self.upload_url())
+        request = prepare_receipt_upload.call_args.args[0]
+        self.assertEqual(request.original_filename, "statement.pdf")
+        self.assertEqual(request.file_type, "pdf")
+        delay.assert_called_once_with(
+            receipt_id="00000000-0000-0000-0000-000000000001",
+            file_path="media/uploads/source.pdf",
+            chat_id=None,
+            file_type="pdf",
+        )
+
+    @patch("receipt.views.process_file_task.delay")
+    @patch("receipt.views.receipt_services.prepare_receipt_upload")
+    def test_completed_duplicate_upload_does_not_enqueue_processing(self, prepare_receipt_upload, delay):
+        prepare_receipt_upload.return_value = self.service_result(
+            action="skip_completed",
+            should_enqueue=False,
+            status="completed",
+        )
+        self.client.force_login(self.create_staff_user())
+        uploaded_file = SimpleUploadedFile("receipt.jpg", b"receipt bytes", content_type="image/jpeg")
+
+        response = self.client.post(self.upload_url(), {"document": uploaded_file}, follow=True)
+
+        self.assertEqual(response.status_code, 200)
+        delay.assert_not_called()
+        self.assertContains(response, "already exists")
+
+    def test_invalid_upload_type_renders_form_error(self):
+        self.client.force_login(self.create_staff_user())
+        uploaded_file = SimpleUploadedFile("notes.txt", b"not a receipt", content_type="text/plain")
+
+        response = self.client.post(self.upload_url(), {"document": uploaded_file})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Upload a receipt image or PDF bank statement.")
 
 
 class ReceiptReviewReportExclusionTests(TestCase):
