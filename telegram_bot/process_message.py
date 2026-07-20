@@ -7,6 +7,7 @@ import json
 import re
 import asyncio
 import django
+from pathlib import Path
 
 from telegram import Update
 from extract_info.ocr.tesseract_ocr import extract_text_from_receipt
@@ -18,7 +19,7 @@ from asgiref.sync import sync_to_async
 from handle_files.services.upload import UploadServiceFactory
 from receipt.models import STATUS_CHOICES, Receipt, ReceiptItem, Category
 from receipt import services as receipt_services
-from receipt.dataclasses import ReceiptData, ReceiptItem as ReceiptItemData
+from receipt.dataclasses import ReceiptData, ReceiptItem as ReceiptItemData, ReceiptUploadRequest
 from jose import jwt
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -35,18 +36,6 @@ upload_service = UploadServiceFactory.create('local')  # Use local volume upload
 ALLOWED_USERS = [int(user_id) for user_id in os.environ.get("ALLOWED_USERS").split(",")]
 BANNED_FILE_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "banned.txt"))
 _auth_lock = asyncio.Lock()
-
-
-def get_receipt_duplicate_action(status: str) -> str:
-    if status == "completed":
-        return "skip_completed"
-    if status in {"pending", "processing"}:
-        return "skip_in_progress"
-    if status == "needs_review":
-        return "skip_needs_review"
-    if status == "failed":
-        return "retry"
-    return "retry"
 
 
 def get_receipt_user(update: Update) -> str:
@@ -116,117 +105,66 @@ def _append_banned_id(user_id: int) -> None:
   
     
 async def process_receipt_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Process receipt photo upload with OCR extraction and status tracking.
-    
-    Workflow:
-    1. Upload photo to S3
-    2. Create receipt with PENDING status
-    3. Notify user of successful upload
-    4. Extract data via GPT-4 Vision (status: PROCESSING)
-    5. Update receipt with extracted data (status: COMPLETED or FAILED)
-    6. Notify user of extraction results
-    """
+    """Process receipt image upload with shared receipt upload orchestration."""
     if not await authenticate_user(update, context):
         await update.message.reply_text("⛔You are not authorized to use this bot.")
         return
-    
+
     receipt_id = None
     temp_file_path = None
-    
+
     try:
-        # Get the uploaded document/file
-        print(update.message)
-        document = update.message.photo
-        if not document:
+        document_file, original_filename, file_suffix = await _telegram_receipt_file(update, context)
+        if document_file is None:
             await update.message.reply_text("❌ No file found in the message.")
             return
-        
-        document_file = await context.bot.get_file(document[-1].file_id)
-        
+
         file_data = io.BytesIO()
         await document_file.download_to_memory(out=file_data)
         file_data.seek(0)
-        
-        # Create a temporary photo to store the uploaded file
-        file_extension = ".jpg"
-        with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as temp_file:
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=file_suffix) as temp_file:
             temp_file.write(file_data.read())
             temp_file_path = temp_file.name
-        
-        file_hash = receipt_services.compute_file_sha256(temp_file_path)
-        user = get_receipt_user(update)
 
-        existing_receipt = await sync_to_async(receipt_services.get_receipt_by_user_and_file_hash)(user, file_hash)
-        if existing_receipt:
-            receipt_id = existing_receipt.receipt_id
-            action = get_receipt_duplicate_action(existing_receipt.status)
-            if action != "retry":
-                await reply_for_existing_receipt(update, receipt_id, existing_receipt.status, action)
-                return
-
-        # Upload file
-        file_name = f"{document[-1].file_id}{file_extension}"
-        url = upload_service.upload_file(temp_file_path, file_name)
-        logger.info(f"Photo uploaded: {url}")
-
-        if existing_receipt:
-            await sync_to_async(receipt_services.update_receipt)(
-                receipt_id,
-                image_url=url,
-                status='pending'
+        result = await sync_to_async(receipt_services.prepare_receipt_upload)(
+            ReceiptUploadRequest(
+                user_id=get_receipt_user(update),
+                source_file_path=temp_file_path,
+                original_filename=original_filename,
+                file_type="image",
             )
-            logger.info(f"Receipt {receipt_id} reused for duplicate retry")
-        else:
-            # Phase 1: Create receipt with PENDING status
-            receipt_data = ReceiptData(
-                user_id=user,
-                image_url=url,
-                status='pending'
-            )
-            # Wrap Django ORM call in sync_to_async for async context
-            created_receipt = await sync_to_async(receipt_services.create_receipt_with_file_hash)(receipt_data, file_hash)
-            receipt_id = getattr(created_receipt, 'receipt_id', None)
+        )
+        receipt_id = result.receipt_id
 
-            if not created_receipt.created:
-                action = get_receipt_duplicate_action(created_receipt.status)
-                if action != "retry":
-                    await reply_for_existing_receipt(update, receipt_id, created_receipt.status, action)
-                    return
-                await sync_to_async(receipt_services.update_receipt)(
-                    receipt_id,
-                    image_url=url,
-                    status='pending'
-                )
+        if not result.should_enqueue:
+            await reply_for_existing_receipt(update, result.receipt_id, result.status, result.action)
+            return
 
-            logger.info(f"Receipt {receipt_id} created with PENDING status")
-        
-        # Notify user immediately - upload successful
         await update.message.reply_text(
             f"✅ Receipt uploaded successfully!\n\n"
-            f"Receipt ID: `{receipt_id}`\n"
-            f"Status: pending\n\n"
+            f"Receipt ID: `{result.receipt_id}`\n"
+            f"Status: {result.status}\n\n"
             f"Processing receipt data...",
             parse_mode="Markdown"
         )
-        
-        # Phase 2: Hand off processing to Celery background task
+
         chat_id = update.effective_chat.id if update.effective_chat else update.message.chat_id
         process_file_task.delay(
-            receipt_id=receipt_id,
-            file_path=url,
+            receipt_id=result.receipt_id,
+            file_path=result.image_url,
             chat_id=chat_id,
-            file_type='image'
+            file_type=result.file_type
         )
-        logger.info(f"Handed off receipt {receipt_id} processing to Celery.")
+        logger.info(f"Handed off receipt {result.receipt_id} processing to Celery.")
     except Exception as e:
         logger.error(f"Error processing receipt: {e}", exc_info=True)
-        # Update receipt status to FAILED if it was created
         if receipt_id:
             try:
                 await sync_to_async(receipt_services.update_receipt)(receipt_id, status='failed')
             except Exception as update_error:
                 logger.error(f"Failed to update receipt status: {update_error}")
-        
+
         await update.message.reply_text(
             f"❌ Error initiating receipt processing: {str(e)}\n\n"
             f"Receipt ID: `{receipt_id if receipt_id else 'N/A'}`\n"
@@ -239,6 +177,38 @@ async def process_receipt_upload(update: Update, context: ContextTypes.DEFAULT_T
                 os.unlink(temp_file_path)
             except OSError as cleanup_error:
                 logger.error(f"Failed to cleanup temp file {temp_file_path}: {cleanup_error}")
+
+
+async def _telegram_receipt_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.message
+    if message.photo:
+        photo = message.photo[-1]
+        return (
+            await context.bot.get_file(photo.file_id),
+            f"{photo.file_id}.jpg",
+            ".jpg",
+        )
+
+    if message.document:
+        document = message.document
+        original_filename = document.file_name or f"{document.file_id}{_telegram_document_suffix(document)}"
+        return (
+            await context.bot.get_file(document.file_id),
+            original_filename,
+            Path(original_filename).suffix or _telegram_document_suffix(document),
+        )
+
+    return None, "", ".jpg"
+
+
+def _telegram_document_suffix(document) -> str:
+    mime_type = getattr(document, "mime_type", "")
+    if mime_type == "image/png":
+        return ".png"
+    if mime_type == "image/jpeg":
+        return ".jpg"
+    suffix = Path(getattr(document, "file_name", "") or "").suffix
+    return suffix or ".jpg"
 
 
 

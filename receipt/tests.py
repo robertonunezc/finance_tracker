@@ -101,23 +101,23 @@ class ReceiptReviewStatusTests(TestCase):
 
 class ReceiptDuplicateActionTests(TestCase):
     def test_completed_duplicate_skips_processing(self):
-        from telegram_bot.process_message import get_receipt_duplicate_action
+        from receipt.services import get_receipt_duplicate_action
 
         self.assertEqual(get_receipt_duplicate_action("completed"), "skip_completed")
 
     def test_pending_or_processing_duplicate_skips_new_task(self):
-        from telegram_bot.process_message import get_receipt_duplicate_action
+        from receipt.services import get_receipt_duplicate_action
 
         self.assertEqual(get_receipt_duplicate_action("pending"), "skip_in_progress")
         self.assertEqual(get_receipt_duplicate_action("processing"), "skip_in_progress")
 
     def test_failed_duplicate_retries_same_receipt(self):
-        from telegram_bot.process_message import get_receipt_duplicate_action
+        from receipt.services import get_receipt_duplicate_action
 
         self.assertEqual(get_receipt_duplicate_action("failed"), "retry")
 
     def test_needs_review_duplicate_skips_new_task(self):
-        from telegram_bot.process_message import get_receipt_duplicate_action
+        from receipt.services import get_receipt_duplicate_action
 
         self.assertEqual(get_receipt_duplicate_action("needs_review"), "skip_needs_review")
 
@@ -133,6 +133,63 @@ class ReceiptDuplicateActionTests(TestCase):
         self.assertIn(
             "waiting for manual review",
             message.reply_text.call_args.args[0],
+        )
+
+
+class TelegramReceiptUploadDelegationTests(TestCase):
+    @patch("telegram_bot.process_message.process_file_task.delay")
+    @patch("telegram_bot.process_message.receipt_services.prepare_receipt_upload")
+    @patch("telegram_bot.process_message.authenticate_user", new_callable=AsyncMock)
+    def test_photo_upload_delegates_to_shared_receipt_service(
+        self,
+        authenticate_user,
+        prepare_receipt_upload,
+        delay,
+    ):
+        from receipt.dataclasses import ReceiptUploadResult
+        from telegram_bot.process_message import process_receipt_upload
+
+        authenticate_user.return_value = True
+        prepare_receipt_upload.return_value = ReceiptUploadResult(
+            receipt_id="00000000-0000-0000-0000-000000000002",
+            user_id="telegram-user",
+            image_url="media/uploads/telegram.jpg",
+            status="pending",
+            action="created",
+            file_hash="b" * 64,
+            file_type="image",
+            should_enqueue=True,
+        )
+        document_file = SimpleNamespace(
+            download_to_memory=AsyncMock(side_effect=lambda out: out.write(b"telegram receipt bytes"))
+        )
+        context = SimpleNamespace(
+            bot=SimpleNamespace(
+                get_file=AsyncMock(return_value=document_file),
+            )
+        )
+        update = SimpleNamespace(
+            message=SimpleNamespace(
+                photo=[SimpleNamespace(file_id="photo-file-id")],
+                document=None,
+                reply_text=AsyncMock(),
+                from_user=SimpleNamespace(username="telegram-user", first_name="Roberto", id=42),
+                chat_id=123,
+            ),
+            effective_chat=SimpleNamespace(id=123),
+        )
+
+        asyncio.run(process_receipt_upload(update, context))
+
+        request = prepare_receipt_upload.call_args.args[0]
+        self.assertEqual(request.user_id, "telegram-user")
+        self.assertEqual(request.original_filename, "photo-file-id.jpg")
+        self.assertEqual(request.file_type, "image")
+        delay.assert_called_once_with(
+            receipt_id="00000000-0000-0000-0000-000000000002",
+            file_path="media/uploads/telegram.jpg",
+            chat_id=123,
+            file_type="image",
         )
 
 
