@@ -20,6 +20,8 @@ def _receipt_to_lookup_result(receipt: Receipt, created: bool = False) -> Receip
         status=receipt.status,
         created=created,
         file_hash=receipt.file_hash,
+        source_type=receipt.source_type,
+        source_metadata=receipt.source_metadata or {},
     )
 
 
@@ -61,6 +63,8 @@ def prepare_receipt_upload(request: ReceiptUploadRequest, upload_service=None) -
             user_id=request.user_id,
             image_url=uploaded_url,
             status="pending",
+            source_type=request.source_type,
+            source_metadata=request.source_metadata or {},
         ),
         file_hash,
     )
@@ -80,7 +84,13 @@ def _retry_receipt_upload(
     upload_service=None,
 ) -> ReceiptUploadResult:
     uploaded_url = _upload_receipt_source_file(request, upload_service)
-    update_receipt(receipt.receipt_id, image_url=uploaded_url, status="pending")
+    update_receipt(
+        receipt.receipt_id,
+        image_url=uploaded_url,
+        status="pending",
+        source_type=request.source_type,
+        source_metadata=request.source_metadata or {},
+    )
     return ReceiptUploadResult(
         receipt_id=receipt.receipt_id,
         user_id=receipt.user_id,
@@ -90,6 +100,8 @@ def _retry_receipt_upload(
         file_hash=file_hash,
         file_type=request.file_type,
         should_enqueue=True,
+        source_type=request.source_type,
+        source_metadata=request.source_metadata or {},
     )
 
 
@@ -109,6 +121,8 @@ def _receipt_upload_result(
         file_hash=receipt.file_hash or "",
         file_type=file_type,
         should_enqueue=should_enqueue,
+        source_type=receipt.source_type,
+        source_metadata=receipt.source_metadata or {},
     )
 
 
@@ -145,6 +159,8 @@ def create_receipt_with_file_hash(receipt_data: ReceiptData, file_hash: str) -> 
                 purchase_date=receipt_data.purchase_date or timezone.now(),
                 total_amount=receipt_data.total_amount or Decimal(0.0),
                 image_url=receipt_data.image_url,
+                source_type=receipt_data.source_type,
+                source_metadata=receipt_data.source_metadata or {},
                 status=receipt_data.status or 'pending'
             )
         return _receipt_to_lookup_result(receipt, created=True)
@@ -169,6 +185,8 @@ def create_receipt(receipt_data: ReceiptData) -> ReceiptData:
         purchase_date=receipt_data.purchase_date or timezone.now(),
         total_amount=receipt_data.total_amount or Decimal(0.0),
         image_url=receipt_data.image_url,
+        source_type=receipt_data.source_type,
+        source_metadata=receipt_data.source_metadata or {},
         status=receipt_data.status or 'pending'
     )
     # Return with receipt_id for tracking
@@ -178,7 +196,9 @@ def create_receipt(receipt_data: ReceiptData) -> ReceiptData:
         total_amount=receipt.total_amount,
         image_url=receipt.image_url,
         status=receipt.status,
-        items=list(receipt.items.all())
+        items=list(receipt.items.all()),
+        source_type=receipt.source_type,
+        source_metadata=receipt.source_metadata or {},
     )
     # Attach receipt_id as an attribute for easy access
     saved_data.receipt_id = receipt.receipt_id
@@ -226,7 +246,9 @@ def update_receipt(receipt_id: str, **kwargs) -> ReceiptData:
         total_amount=receipt.total_amount,
         image_url=receipt.image_url,
         status=receipt.status,
-        items=list(receipt.items.all())
+        items=list(receipt.items.all()),
+        source_type=receipt.source_type,
+        source_metadata=receipt.source_metadata or {},
     )
 def get_receipt_by_id(receipt_id: str) -> Optional[ReceiptData]:
     """
@@ -244,7 +266,9 @@ def get_receipt_by_id(receipt_id: str) -> Optional[ReceiptData]:
             total_amount=receipt.total_amount,
             image_url=receipt.image_url,
             status=receipt.status,
-            items=list(receipt.items.all())
+            items=list(receipt.items.all()),
+            source_type=receipt.source_type,
+            source_metadata=receipt.source_metadata or {},
         )
     except Receipt.DoesNotExist:
         return None
@@ -268,7 +292,9 @@ def list_receipts_by_user(user_id: str) -> List[ReceiptData]:
                 total_amount=receipt.total_amount,
                 image_url=receipt.image_url,
                 status=receipt.status,
-                items=list(receipt.items.all())
+                items=list(receipt.items.all()),
+                source_type=receipt.source_type,
+                source_metadata=receipt.source_metadata or {},
             )
         )
     return receipt_list

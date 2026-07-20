@@ -8,7 +8,7 @@ Django 6.0 finance tracker with Telegram bot integration for receipt processing.
 ### Core Components
 - **Django Apps**: Modular Django structure with `receipt`, `extract_info`, `handle_files`, `telegram_bot`, `user`, `auth`
 - **Telegram Bot** ([telegram_bot/main.py](telegram_bot/main.py)): Primary user interface - receives photos, manages auth, orchestrates workflows
-- **Receipt Processing Pipeline**: Upload → Pending → Processing → Completed/Failed with user notifications at each stage
+- **Receipt Processing Pipeline**: Upload → Pending → Processing → Completed/Failed, with source-specific notifications dispatched separately from extraction
 - **Storage**: AWS S3 for images (`handle_files/services/upload.py`), PostgreSQL for structured data, Redis for caching
 
 ### Service Layer Pattern
@@ -65,10 +65,10 @@ python3 manage.py createsuperuser
 ## Critical Patterns & Conventions
 
 ### Receipt Processing Workflow
-3-phase workflow with user notifications ([telegram_bot/main.py](telegram_bot/main.py#L106-L283)):
-1. **Upload & Pending**: Upload to S3, create DB record, notify user immediately
-2. **Processing**: Update status, call GPT-4 Vision for OCR extraction
-3. **Completion**: Parse JSON, create ReceiptItems, update total/status, send summary
+3-phase workflow with source-specific notifications:
+1. **Upload & Pending**: Source adapter uploads the file, creates or reuses a DB record, stores `source_type` and `source_metadata`, and sends any immediate source-specific acknowledgement.
+2. **Processing**: `process_file_task` updates status, calls GPT-4 Vision for OCR extraction, enriches categories, and persists the extraction result. It does not access Telegram or other clients.
+3. **Completion**: `receipt.tasks.notify_receipt_processed_task` loads the receipt source and dispatches the result to the correct notifier. Telegram delivery lives in `telegram_bot.notifications`; manual uploads are currently a no-op.
 
 **GPT-4 Vision Prompt** ([extract_info/services.py](extract_info/services.py#L27)): Requests structured JSON with items array, handles Spanish receipts, uses "other" for unclear categories (no hallucination).
 
@@ -135,7 +135,7 @@ auth/                     # Empty - using Telegram auth only
 ```
 
 ## When Modifying Code
-1. **Receipt Status Changes**: Always notify user via Telegram, update DB atomically
+1. **Receipt Status Changes**: Keep processing source-agnostic. Persist status/data first, then notify through `receipt.tasks.notify_receipt_processed_task` based on `Receipt.source_type`.
 2. **Adding Categories**: Extend `Category` TextChoices in [receipt/models.py](receipt/models.py#L14)
 3. **New Services**: Follow ABC pattern with factory (see [upload.py](handle_files/services/upload.py))
 4. **Database Changes**: Use `make migrate`, Docker Postgres must be running

@@ -140,7 +140,7 @@ class TelegramReceiptUploadDelegationTests(TestCase):
     @patch("telegram_bot.process_message.process_file_task.delay")
     @patch("telegram_bot.process_message.receipt_services.prepare_receipt_upload")
     @patch("telegram_bot.process_message.authenticate_user", new_callable=AsyncMock)
-    def test_photo_upload_delegates_to_shared_receipt_service(
+    def test_photo_upload_delegates_to_shared_receipt_service_with_telegram_source(
         self,
         authenticate_user,
         prepare_receipt_upload,
@@ -185,10 +185,11 @@ class TelegramReceiptUploadDelegationTests(TestCase):
         self.assertEqual(request.user_id, "telegram-user")
         self.assertEqual(request.original_filename, "photo-file-id.jpg")
         self.assertEqual(request.file_type, "image")
+        self.assertEqual(request.source_type, "telegram")
+        self.assertEqual(request.source_metadata, {"chat_id": 123})
         delay.assert_called_once_with(
             receipt_id="00000000-0000-0000-0000-000000000002",
             file_path="media/uploads/telegram.jpg",
-            chat_id=123,
             file_type="image",
         )
 
@@ -209,7 +210,16 @@ class ReceiptUploadPreparationTests(TestCase):
         self.addCleanup(lambda: os.path.exists(temp_file.name) and os.unlink(temp_file.name))
         return temp_file.name
 
-    def upload_request(self, *, user_id="manual-user", content=b"receipt bytes", filename="receipt.jpg", file_type="image"):
+    def upload_request(
+        self,
+        *,
+        user_id="manual-user",
+        content=b"receipt bytes",
+        filename="receipt.jpg",
+        file_type="image",
+        source_type="manual_upload",
+        source_metadata=None,
+    ):
         from receipt.dataclasses import ReceiptUploadRequest
 
         return ReceiptUploadRequest(
@@ -217,6 +227,8 @@ class ReceiptUploadPreparationTests(TestCase):
             source_file_path=self.write_upload_file(content=content, suffix=Path(filename).suffix),
             original_filename=filename,
             file_type=file_type,
+            source_type=source_type,
+            source_metadata={} if source_metadata is None else source_metadata,
         )
 
     def test_new_image_upload_creates_pending_receipt_and_should_enqueue(self):
@@ -231,6 +243,8 @@ class ReceiptUploadPreparationTests(TestCase):
         self.assertEqual(result.file_type, "image")
         self.assertTrue(result.should_enqueue)
         self.assertEqual(receipt.status, "pending")
+        self.assertEqual(receipt.source_type, "manual_upload")
+        self.assertEqual(receipt.source_metadata, {})
         self.assertEqual(receipt.file_hash, result.file_hash)
         self.assertTrue(result.image_url.startswith("media/uploads/"))
         self.assertEqual(len(upload_service.uploads), 1)
@@ -305,9 +319,104 @@ class ReceiptUploadPreparationTests(TestCase):
         self.assertEqual(result.status, "pending")
         self.assertTrue(result.should_enqueue)
         self.assertEqual(receipt.status, "pending")
+        self.assertEqual(receipt.source_type, "manual_upload")
+        self.assertEqual(receipt.source_metadata, {})
         self.assertNotEqual(receipt.image_url, original_image_url)
         self.assertEqual(len(retry_service.uploads), 1)
         self.assertEqual(Path(retry_service.uploads[0][1]).suffix, ".png")
+
+
+class ReceiptNotificationTaskTests(TestCase):
+    def create_receipt(self, *, status="completed", source_type="telegram", source_metadata=None):
+        receipt = Receipt.objects.create(
+            user_id="notify-user",
+            purchase_date=timezone.now(),
+            total_amount=Decimal("1249.00"),
+            image_url="media/uploads/notify.jpg",
+            status=status,
+            source_type=source_type,
+            source_metadata={"chat_id": 123} if source_metadata is None else source_metadata,
+        )
+        ReceiptItem.objects.create(
+            receipt=receipt,
+            name="AMZN MX MARKETPLACE",
+            price=1249.00,
+            quantity=1,
+            category="electronics",
+        )
+        return receipt
+
+    @patch("telegram_bot.notifications.asyncio.run")
+    @patch("telegram_bot.notifications.Bot")
+    @patch("telegram_bot.notifications.os.getenv", return_value="bot-token")
+    def test_telegram_completed_notification_sends_summary(self, getenv, bot_class, run_async):
+        from receipt.tasks import notify_receipt_processed_task
+
+        receipt = self.create_receipt(status="completed")
+        bot_class.return_value.send_message.return_value = "send-message"
+
+        result = notify_receipt_processed_task.run(str(receipt.receipt_id))
+
+        self.assertTrue(result)
+        bot_class.assert_called_once_with(token="bot-token")
+        message_kwargs = bot_class.return_value.send_message.call_args.kwargs
+        self.assertEqual(message_kwargs["chat_id"], 123)
+        self.assertIn("processed successfully", message_kwargs["text"])
+        self.assertIn("Total: $1,249.00", message_kwargs["text"])
+        self.assertIn("- AMZN MX MARKETPLACE (x1): $1,249.00", message_kwargs["text"])
+        run_async.assert_called_once()
+
+    @patch("telegram_bot.notifications.asyncio.run")
+    @patch("telegram_bot.notifications.Bot")
+    @patch("telegram_bot.notifications.os.getenv", return_value="bot-token")
+    def test_telegram_needs_review_notification_sends_issue_count(self, getenv, bot_class, run_async):
+        from receipt.tasks import notify_receipt_processed_task
+
+        receipt = self.create_receipt(status="needs_review")
+        ReceiptExtractionReview.objects.create(
+            receipt=receipt,
+            status="needs_review",
+            overall_confidence=0.5,
+            issues=[{"code": "low_confidence"}],
+            raw_extraction={},
+        )
+        bot_class.return_value.send_message.return_value = "send-message"
+
+        result = notify_receipt_processed_task.run(str(receipt.receipt_id))
+
+        self.assertTrue(result)
+        message_text = bot_class.return_value.send_message.call_args.kwargs["text"]
+        self.assertIn("needs manual review", message_text)
+        self.assertIn("Issues: 1", message_text)
+        run_async.assert_called_once()
+
+    @patch("telegram_bot.notifications.asyncio.run")
+    @patch("telegram_bot.notifications.Bot")
+    @patch("telegram_bot.notifications.os.getenv", return_value="bot-token")
+    def test_telegram_failed_notification_sends_failure_message(self, getenv, bot_class, run_async):
+        from receipt.tasks import notify_receipt_processed_task
+
+        receipt = self.create_receipt(status="failed")
+        bot_class.return_value.send_message.return_value = "send-message"
+
+        result = notify_receipt_processed_task.run(str(receipt.receipt_id))
+
+        self.assertTrue(result)
+        message_kwargs = bot_class.return_value.send_message.call_args.kwargs
+        self.assertEqual(message_kwargs["chat_id"], 123)
+        self.assertIn("Failed to process receipt", message_kwargs["text"])
+        run_async.assert_called_once()
+
+    @patch("telegram_bot.notifications.Bot")
+    def test_manual_upload_notification_skips_external_delivery(self, bot_class):
+        from receipt.tasks import notify_receipt_processed_task
+
+        receipt = self.create_receipt(status="completed", source_type="manual_upload", source_metadata={})
+
+        result = notify_receipt_processed_task.run(str(receipt.receipt_id))
+
+        self.assertFalse(result)
+        bot_class.assert_not_called()
 
 
 class ReceiptExtractionValidationTests(TestCase):
@@ -1011,10 +1120,11 @@ class ReceiptManualUploadViewTests(TestCase):
         self.assertEqual(request.user_id, "staff-uploader")
         self.assertEqual(request.original_filename, "receipt.jpg")
         self.assertEqual(request.file_type, "image")
+        self.assertEqual(request.source_type, "manual_upload")
+        self.assertEqual(request.source_metadata, {})
         delay.assert_called_once_with(
             receipt_id="00000000-0000-0000-0000-000000000001",
             file_path="media/uploads/source.jpg",
-            chat_id=None,
             file_type="image",
         )
 
@@ -1031,10 +1141,11 @@ class ReceiptManualUploadViewTests(TestCase):
         request = prepare_receipt_upload.call_args.args[0]
         self.assertEqual(request.original_filename, "statement.pdf")
         self.assertEqual(request.file_type, "pdf")
+        self.assertEqual(request.source_type, "manual_upload")
+        self.assertEqual(request.source_metadata, {})
         delay.assert_called_once_with(
             receipt_id="00000000-0000-0000-0000-000000000001",
             file_path="media/uploads/source.pdf",
-            chat_id=None,
             file_type="pdf",
         )
 

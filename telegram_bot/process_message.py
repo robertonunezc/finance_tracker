@@ -127,12 +127,15 @@ async def process_receipt_upload(update: Update, context: ContextTypes.DEFAULT_T
             temp_file.write(file_data.read())
             temp_file_path = temp_file.name
 
+        chat_id = update.effective_chat.id if update.effective_chat else update.message.chat_id
         result = await sync_to_async(receipt_services.prepare_receipt_upload)(
             ReceiptUploadRequest(
                 user_id=get_receipt_user(update),
                 source_file_path=temp_file_path,
                 original_filename=original_filename,
                 file_type="image",
+                source_type="telegram",
+                source_metadata={"chat_id": chat_id},
             )
         )
         receipt_id = result.receipt_id
@@ -149,11 +152,9 @@ async def process_receipt_upload(update: Update, context: ContextTypes.DEFAULT_T
             parse_mode="Markdown"
         )
 
-        chat_id = update.effective_chat.id if update.effective_chat else update.message.chat_id
         process_file_task.delay(
             receipt_id=result.receipt_id,
             file_path=result.image_url,
-            chat_id=chat_id,
             file_type=result.file_type
         )
         logger.info(f"Handed off receipt {result.receipt_id} processing to Celery.")
@@ -237,7 +238,9 @@ async def process_voice_message(update: Update, context: ContextTypes.DEFAULT_TY
     receipt_data = ReceiptData(
         user_id=update.effective_user.id,
         image_url=url,
-        status='pending'
+        status='pending',
+        source_type="telegram",
+        source_metadata={"chat_id": update.effective_chat.id if update.effective_chat else update.message.chat_id},
     )
     created_receipt = await sync_to_async(receipt_services.create_receipt)(receipt_data)
     receipt_id = getattr(created_receipt, 'receipt_id', None)
@@ -249,11 +252,9 @@ async def process_voice_message(update: Update, context: ContextTypes.DEFAULT_TY
         f"Processing receipt data...",
         parse_mode="Markdown"
     )
-    chat_id = update.effective_chat.id if update.effective_chat else update.message.chat_id
     process_file_task.delay(
         receipt_id=receipt_id,
         file_path=url,
-        chat_id=chat_id,
         file_type='audio'
     )
     logger.info(f"Handed off receipt {receipt_id} processing to Celery.")

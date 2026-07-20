@@ -1,38 +1,30 @@
 from celery import shared_task
 import logging
 import os
-import asyncio
 import tempfile
 from decimal import Decimal, InvalidOperation
-from telegram import Bot
 
 from extract_info import services as extract_info_service
 from receipt import extraction_review
 from receipt import services as receipt_services
 from receipt.dataclasses import ReceiptItem as ReceiptItemData
 from receipt.models import Category
+from receipt.tasks import notify_receipt_processed_task
 
 logger = logging.getLogger(__name__)
 
-def mark_receipt_failed(receipt_id: str, bot_token: str | None = None, chat_id: int | None = None) -> None:
+
+def mark_receipt_failed(receipt_id: str) -> None:
     receipt_services.update_receipt(receipt_id, status='failed')
-    if bot_token and chat_id:
-        bot = Bot(token=bot_token)
-        asyncio.run(bot.send_message(
-            chat_id=chat_id,
-            text=f"❌ Failed to process receipt {receipt_id}. Please try again."
-        ))
 
 
 @shared_task(bind=True, max_retries=3, autoretry_for=(Exception,), retry_backoff=True)
-def process_file_task(self, receipt_id: str, file_path: str, chat_id: int | None = None, file_type: str = "image"):
+def process_file_task(self, receipt_id: str, file_path: str, file_type: str = "image"):
     """
     Background task to process a receipt file (image, audio, or pdf).
     file_path is the relative path in the media volume.
     file_type should be 'image', 'audio', or 'pdf'.
     """
-    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
-    
     try:
         logger.info(f"Starting task: process_file_task for receipt {receipt_id} (type: {file_type}). Attempt: {self.request.retries + 1}")
         
@@ -86,7 +78,6 @@ def process_file_task(self, receipt_id: str, file_path: str, chat_id: int | None
             ticket=ticket,
             items=items,
         )
-        total_amount = float(application_result.total_amount)
         logger.info(
             "Receipt %s saved with status %s and %s items",
             receipt_id,
@@ -101,26 +92,7 @@ def process_file_task(self, receipt_id: str, file_path: str, chat_id: int | None
             except Exception as e:
                 logger.error(f"Failed to cleanup temp file {file_path}: {e}")
                 
-        # Send Success Message to Telegram
-        if bot_token and chat_id:
-            bot = Bot(token=bot_token)
-            
-            if application_result.status == "needs_review":
-                message_text = (
-                    f"⚠️ Receipt {receipt_id} needs manual review.\n"
-                    f"Total: ${total_amount:,.2f}\n"
-                    f"Issues: {len(application_result.validation.issues)}\n"
-                    f"Items Extracted: {len(items)}\n\nItems:\n"
-                )
-            else:
-                message_text = f"✅ Receipt {receipt_id} processed successfully!\nTotal: ${total_amount:,.2f}\nItems Extracted: {len(items)}\n\nItems:\n"
-            for item in items:
-                message_text += f"- {item.name} (x{item.quantity}): ${item.price:,.2f}\n"
-                
-            asyncio.run(bot.send_message(
-                chat_id=chat_id,
-                text=message_text
-            ))
+        _schedule_receipt_notification(receipt_id)
 
         return True
 
@@ -130,7 +102,8 @@ def process_file_task(self, receipt_id: str, file_path: str, chat_id: int | None
         # If we exhausted retries, mark as error and notify user
         if self.request.retries >= self.max_retries:
             try:
-                mark_receipt_failed(receipt_id, bot_token=bot_token, chat_id=chat_id)
+                mark_receipt_failed(receipt_id)
+                _schedule_receipt_notification(receipt_id)
             except Exception as inner_e:
                 logger.error(f"Failed to update failed status for {receipt_id}: {inner_e}")
 
@@ -159,3 +132,10 @@ def should_cleanup_processed_file(file_path: str | None) -> bool:
         return os.path.commonpath([file_realpath, temp_realpath]) == temp_realpath
     except ValueError:
         return False
+
+
+def _schedule_receipt_notification(receipt_id: str) -> None:
+    try:
+        notify_receipt_processed_task.delay(receipt_id)
+    except Exception as exc:
+        logger.error("Failed to schedule receipt processing notification for %s: %s", receipt_id, exc)

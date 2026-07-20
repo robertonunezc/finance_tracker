@@ -38,13 +38,14 @@ def upload(request):
                         source_file_path=temp_file_path,
                         original_filename=uploaded_file.name,
                         file_type=form.cleaned_data["file_type"],
+                        source_type="manual_upload",
+                        source_metadata={},
                     )
                 )
                 if result.should_enqueue:
                     process_file_task.delay(
                         receipt_id=result.receipt_id,
                         file_path=result.image_url,
-                        chat_id=None,
                         file_type=result.file_type,
                     )
                     messages.success(

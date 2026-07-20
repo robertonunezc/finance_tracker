@@ -1,7 +1,7 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from receipt.models import Category
 
@@ -23,6 +23,8 @@ class ReceiptData:
     total_amount: Optional[Decimal] = None
     status: Optional[str] = 'pending'
     items: Optional[List[ReceiptItem]] = None
+    source_type: str = "unknown"
+    source_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -33,6 +35,8 @@ class ReceiptLookupResult:
     status: str
     created: bool
     file_hash: Optional[str] = None
+    source_type: str = "unknown"
+    source_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -41,6 +45,8 @@ class ReceiptUploadRequest:
     source_file_path: str
     original_filename: str
     file_type: str
+    source_type: str = "unknown"
+    source_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -53,3 +59,5 @@ class ReceiptUploadResult:
     file_hash: str
     file_type: str
     should_enqueue: bool
+    source_type: str = "unknown"
+    source_metadata: dict[str, Any] = field(default_factory=dict)

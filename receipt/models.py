@@ -15,6 +15,12 @@ REVIEW_STATUS_CHOICES = [
     ]
 
 
+class ReceiptSource(models.TextChoices):
+    UNKNOWN = 'unknown', 'Unknown'
+    TELEGRAM = 'telegram', 'Telegram'
+    MANUAL_UPLOAD = 'manual_upload', 'Manual upload'
+
+
 class Category(models.TextChoices):
     TOYS = 'toys', 'Juguetes'
     GROCERIES = 'groceries', 'Abarrotes'
@@ -62,6 +68,12 @@ class Receipt(models.Model):
     discount_amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     store_name = models.CharField(max_length=255, null=True, blank=True)
     image_url = models.URLField()
+    source_type = models.CharField(
+        max_length=32,
+        choices=ReceiptSource.choices,
+        default=ReceiptSource.UNKNOWN,
+    )
+    source_metadata = models.JSONField(default=dict, blank=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
     extracted_text = models.TextField(null=True, blank=True)
     extraction_result = models.JSONField(null=True, blank=True)
