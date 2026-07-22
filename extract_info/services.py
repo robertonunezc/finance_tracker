@@ -21,6 +21,8 @@ The tickets are from Mexico so are in Spanish.
 The quantity data can be in a column with names like: CANT, CANTIDAD. If you cannot extract the quantity, return 1 by default for all the items.
 Always extract the raw item name, do not hallucinate or correct it; use exactly what appears on the receipt.
 For the store name, prefer the canonical commercial name that appears on the receipt. If the receipt includes legal suffixes such as SA DE CV, S.A. DE C.V., S.A. DE C.V, SOCIEDAD ANONIMA, or similar, normalize them away in the final store_name value.
+For product items if the TOTAL column is present, use it as the price. If the TOTAL column is not present, use the PRECIO or PRICE column. If neither is present, use the P.U. or UNIT PRICE column. If none of these columns are present, return null for the price.
+Do not extract items where a minus sign appears in front or after the price, as those are likely discounts or returns.
 Examples:
 - "TIENDAS CHEDRAUI SA DE CV" -> "chedraui"
 - "Soriana S.A. de C.V." -> "soriana"
@@ -113,6 +115,8 @@ def extract_receipt_text(image_path:str)->Ticket:
     try:
         response = client.chat.completions.parse(
             model="gpt-4o-mini",
+            temperature=0.0,
+            seed=0.0,
             messages=[
             {
                 "role": "user",
@@ -174,6 +178,8 @@ def categorize_item(item:str)->str:
 
     response = client.chat.completions.create(
         model="gpt-4o-mini",
+        temperature=0.0,
+        seed=0.0,
         messages=[
         {
             "role": "user",
@@ -219,6 +225,8 @@ def transcribe_and_extract_text(audio_path:str):
 
         response = client.chat.completions.parse(
             model="gpt-4o-mini",
+            temperature=0.0,
+            seed=0.0,
             messages=[
             {
                 "role": "user",
