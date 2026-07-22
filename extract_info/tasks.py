@@ -18,7 +18,7 @@ def mark_receipt_failed(receipt_id: str) -> None:
     receipt_services.update_receipt(receipt_id, status='failed')
 
 
-@shared_task(bind=True, max_retries=3, autoretry_for=(Exception,), retry_backoff=True)
+@shared_task(bind=True)
 def process_file_task(self, receipt_id: str, file_path: str, file_type: str = "image"):
     """
     Background task to process a receipt file (image, audio, or pdf).
@@ -98,14 +98,11 @@ def process_file_task(self, receipt_id: str, file_path: str, file_type: str = "i
 
     except Exception as e:
         logger.error(f"Task process_file_task failed for {file_path}: {e}")
-        
-        # If we exhausted retries, mark as error and notify user
-        if self.request.retries >= self.max_retries:
-            try:
-                mark_receipt_failed(receipt_id)
-                _schedule_receipt_notification(receipt_id)
-            except Exception as inner_e:
-                logger.error(f"Failed to update failed status for {receipt_id}: {inner_e}")
+        try:
+            mark_receipt_failed(receipt_id)
+            _schedule_receipt_notification(receipt_id)
+        except Exception as inner_e:
+            logger.error(f"Failed to update failed status for {receipt_id}: {inner_e}")
 
         raise
 

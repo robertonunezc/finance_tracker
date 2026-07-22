@@ -5,8 +5,16 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.test import TestCase
+from pydantic import ValidationError
 
-from extract_info.services import normalize_store_name
+from extract_info.services import (
+    AmountExtractionField,
+    IntegerExtractionField,
+    Item,
+    TextExtractionField,
+    Ticket,
+    normalize_store_name,
+)
 from receipt.dataclasses import ReceiptItem as ReceiptItemData
 
 
@@ -19,6 +27,90 @@ class NormalizeStoreNameTests(TestCase):
     def test_returns_none_for_empty_values(self):
         self.assertIsNone(normalize_store_name(""))
         self.assertIsNone(normalize_store_name(None))
+
+
+class TicketExtractionRetryTests(TestCase):
+    def validation_error(self):
+        try:
+            Ticket.model_validate(
+                {
+                    "items": [
+                        {
+                            "name": {
+                                "value": "LECHE",
+                                "source_text": "LECHE",
+                                "confidence": 1.2,
+                            }
+                        }
+                    ]
+                }
+            )
+        except ValidationError as exc:
+            return exc
+        self.fail("Expected invalid ticket payload to raise ValidationError")
+
+    def ticket(self):
+        return Ticket(
+            items=[
+                Item(
+                    name=TextExtractionField(value="LECHE", source_text="LECHE", confidence=0.95),
+                    price=AmountExtractionField(value=42.5, source_text="$42.50", confidence=0.95),
+                    quantity=IntegerExtractionField(value=1, source_text="1", confidence=0.95),
+                    category=TextExtractionField(value="groceries", source_text="LECHE", confidence=0.8),
+                )
+            ],
+            total=AmountExtractionField(value=42.5, source_text="$42.50", confidence=0.95),
+        )
+
+    def response(self, ticket=None, refusal=None):
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        parsed=ticket,
+                        refusal=refusal,
+                    )
+                )
+            ]
+        )
+
+    @patch("extract_info.services.client.chat.completions.parse")
+    def test_extract_receipt_text_retries_validation_error_with_repair_instruction(self, parse):
+        from extract_info.services import extract_receipt_text
+
+        parsed_ticket = self.ticket()
+        parse.side_effect = [self.validation_error(), self.response(parsed_ticket)]
+
+        with tempfile.NamedTemporaryFile(suffix=".jpg") as image_file:
+            image_file.write(b"receipt image bytes")
+            image_file.flush()
+
+            result = extract_receipt_text(image_file.name)
+
+        self.assertEqual(result, parsed_ticket)
+        self.assertEqual(parse.call_count, 2)
+        first_messages = parse.call_args_list[0].kwargs["messages"]
+        retry_messages = parse.call_args_list[1].kwargs["messages"]
+        self.assertEqual(len(retry_messages), len(first_messages) + 1)
+        self.assertIn(
+            "Previous response failed schema validation",
+            retry_messages[-1]["content"][0]["text"],
+        )
+
+    @patch("extract_info.services.client.chat.completions.parse")
+    def test_extract_receipt_text_does_not_retry_model_refusal(self, parse):
+        from extract_info.services import extract_receipt_text
+
+        parse.return_value = self.response(ticket=None, refusal="cannot process image")
+
+        with tempfile.NamedTemporaryFile(suffix=".jpg") as image_file:
+            image_file.write(b"receipt image bytes")
+            image_file.flush()
+
+            with self.assertRaises(ValueError):
+                extract_receipt_text(image_file.name)
+
+        self.assertEqual(parse.call_count, 1)
 
 
 class ReceiptTaskFailureTests(TestCase):
@@ -202,7 +294,7 @@ class ProcessFileTaskReviewIntegrationTests(TestCase):
     @patch("extract_info.tasks.notify_receipt_processed_task.delay")
     @patch("extract_info.tasks.extract_info_service.extract_receipt_text", side_effect=RuntimeError("extract failed"))
     @patch("extract_info.tasks.receipt_services.update_receipt")
-    def test_exhausted_retry_marks_receipt_failed_and_schedules_notification(
+    def test_failure_marks_receipt_failed_and_schedules_notification_without_task_retry(
         self,
         update_receipt,
         extract_receipt_text,
@@ -210,14 +302,10 @@ class ProcessFileTaskReviewIntegrationTests(TestCase):
     ):
         from extract_info.tasks import process_file_task
 
-        original_retries = process_file_task.request.retries
-        process_file_task.request.retries = process_file_task.max_retries
-        try:
-            with self.assertRaises(RuntimeError):
-                process_file_task.run("receipt-id", "missing.jpg", "image")
-        finally:
-            process_file_task.request.retries = original_retries
+        with self.assertRaises(RuntimeError):
+            process_file_task.run("receipt-id", "missing.jpg", "image")
 
         update_receipt.assert_any_call("receipt-id", status="processing")
         update_receipt.assert_any_call("receipt-id", status="failed")
         notify_delay.assert_called_once_with("receipt-id")
+        self.assertEqual(getattr(process_file_task, "autoretry_for", ()), ())

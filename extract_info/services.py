@@ -3,7 +3,7 @@ import json
 import logging
 import os
 import re
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -15,6 +15,8 @@ from receipt.models import Category, ReceiptItem
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+EXTRACTION_VALIDATION_MAX_ATTEMPTS = 3
+REPAIR_ERROR_LIMIT = 8
 EXTRACTION_PROMPT="""
 Extract all readable text from this grocery receipt and structure it as Ticket object.
 The tickets are from Mexico so are in Spanish.
@@ -68,6 +70,11 @@ class Ticket(BaseModel):
     store_name: Optional[TextExtractionField] = Field(default=None, description="Name of the store where the ticket was issued")
     total: Optional[AmountExtractionField] = Field(default=None, description="Total amount of the ticket")
 
+
+class ModelRefusalError(ValueError):
+    pass
+
+
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 
@@ -108,16 +115,99 @@ def encode_image_to_base64(image_path):
     with open(image_path, "rb") as f:
         return base64.b64encode(f.read()).decode("utf-8")
 
+
+def extract_ticket_from_messages(
+    messages: list[dict[str, Any]],
+    *,
+    max_attempts: int = EXTRACTION_VALIDATION_MAX_ATTEMPTS,
+) -> Ticket:
+    request_messages = messages
+    for attempt in range(1, max_attempts + 1):
+        try:
+            response = client.chat.completions.parse(
+                model="gpt-4o-mini",
+                temperature=0.0,
+                seed=0,
+                messages=request_messages,
+                response_format=Ticket,
+            )
+            return _parsed_ticket_from_response(response)
+        except (ValidationError, json.JSONDecodeError) as exc:
+            if attempt >= max_attempts:
+                logger.error(
+                    "Ticket extraction validation failed after %s attempts: %s",
+                    max_attempts,
+                    exc,
+                )
+                raise
+            logger.warning(
+                "Ticket extraction validation failed on attempt %s/%s; retrying with repair instruction: %s",
+                attempt,
+                max_attempts,
+                exc,
+            )
+            request_messages = _messages_with_repair_instruction(messages, exc)
+
+    raise RuntimeError("Ticket extraction retry loop exited unexpectedly")
+
+
+def _parsed_ticket_from_response(response: Any) -> Ticket:
+    message = response.choices[0].message
+    parsed_ticket = message.parsed
+    if parsed_ticket is None:
+        raise ModelRefusalError(f"Model refused: {message.refusal}")
+    return parsed_ticket
+
+
+def _messages_with_repair_instruction(
+    messages: list[dict[str, Any]],
+    exc: ValidationError | json.JSONDecodeError,
+) -> list[dict[str, Any]]:
+    return [
+        *messages,
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": _repair_instruction(exc),
+                }
+            ],
+        },
+    ]
+
+
+def _repair_instruction(exc: ValidationError | json.JSONDecodeError) -> str:
+    return (
+        "Previous response failed schema validation for the Ticket response_format.\n"
+        "Return the same receipt extraction again as valid JSON matching the Ticket schema. "
+        "Fix only the fields, types, and constraints listed below. Do not include markdown.\n\n"
+        f"{_format_validation_error(exc)}"
+    )
+
+
+def _format_validation_error(exc: ValidationError | json.JSONDecodeError) -> str:
+    if isinstance(exc, ValidationError):
+        errors = exc.errors()
+        lines = []
+        for error in errors[:REPAIR_ERROR_LIMIT]:
+            location = ".".join(str(part) for part in error.get("loc", ())) or "<root>"
+            error_type = error.get("type", "validation_error")
+            message = error.get("msg", str(exc))
+            lines.append(f"- {location}: {message} ({error_type})")
+        remaining = len(errors) - REPAIR_ERROR_LIMIT
+        if remaining > 0:
+            lines.append(f"- {remaining} more validation errors omitted")
+        return "\n".join(lines)
+    return str(exc)
+
+
 # Prepare the API request
 def extract_receipt_text(image_path:str)->Ticket:
     base64_image = encode_image_to_base64(image_path)
     logger.info(f"Extracting text from image: {image_path}")
     try:
-        response = client.chat.completions.parse(
-            model="gpt-4o-mini",
-            temperature=0.0,
-            seed=0.0,
-            messages=[
+        messages = [
             {
                 "role": "user",
                 "content": [
@@ -133,19 +223,19 @@ def extract_receipt_text(image_path:str)->Ticket:
                     }
                 ]
             }
-        ],
-        response_format=Ticket)
-        parsed_ticket = response.choices[0].message.parsed
-        if parsed_ticket is None:
-            raise ValueError(f"Model refused: {response.choices[0].message.refusal}")
+        ]
+        parsed_ticket = extract_ticket_from_messages(messages)
 
         if getattr(parsed_ticket, "store_name", None) and parsed_ticket.store_name.value:
             parsed_ticket.store_name.value = normalize_store_name(parsed_ticket.store_name.value)
 
         logger.info(f"GPT extraction successful")
         return parsed_ticket
-    except (ValidationError, json.JSONDecodeError, ValueError) as e:
+    except (ValidationError, json.JSONDecodeError) as e:
         logger.error(f"Validation or parsing error: {e}")
+        raise
+    except ModelRefusalError as e:
+        logger.error(f"Model refusal: {e}")
         raise
     except Exception as e:
         logger.error(f"GPT extraction failed: {str(e)}")
@@ -223,11 +313,7 @@ def transcribe_and_extract_text(audio_path:str):
         # 2. Extract structured data from transcription
         logger.info("Step 2: Extracting structured data from transcription...")
 
-        response = client.chat.completions.parse(
-            model="gpt-4o-mini",
-            temperature=0.0,
-            seed=0.0,
-            messages=[
+        messages = [
             {
                 "role": "user",
                 "content": [
@@ -237,12 +323,8 @@ def transcribe_and_extract_text(audio_path:str):
                     }
                 ]
             }
-        ],
-        response_format=Ticket)
-        
-        parsed_ticket = response.choices[0].message.parsed
-        if parsed_ticket is None:
-            raise ValueError(f"Model refused: {response.choices[0].message.refusal}")
+        ]
+        parsed_ticket = extract_ticket_from_messages(messages)
 
         if getattr(parsed_ticket, "store_name", None) and parsed_ticket.store_name.value:
             parsed_ticket.store_name.value = normalize_store_name(parsed_ticket.store_name.value)
@@ -250,8 +332,11 @@ def transcribe_and_extract_text(audio_path:str):
         logger.info(f"Extraction successful: {len(parsed_ticket.items)} items found")
         return parsed_ticket
         
-    except (ValidationError, json.JSONDecodeError, ValueError) as e:
+    except (ValidationError, json.JSONDecodeError) as e:
         logger.error(f"Validation or parsing error: {e}")
+        raise
+    except ModelRefusalError as e:
+        logger.error(f"Model refusal: {e}")
         raise
     except Exception as e:
         logger.error(f"Transcription or extraction failed: {str(e)}")
