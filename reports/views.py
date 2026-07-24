@@ -45,6 +45,7 @@ def receipt_ticket_image(request, receipt_id):
         Receipt,
         receipt_id=receipt_id,
         status="completed",
+        is_active=True,
     )
     return _ticket_image_response(receipt)
 

@@ -32,6 +32,9 @@
           </li>
           {% if request.user.is_staff %}
             <li class="nav-item">
+              <a class="nav-link {% block receipts_nav_class %}{% endblock %}" href="{% url 'receipt-review:list' %}">Receipts</a>
+            </li>
+            <li class="nav-item">
               <a class="nav-link {% block upload_nav_class %}{% endblock %}" href="{% url 'receipt-review:upload' %}">Upload</a>
             </li>
             <li class="nav-item">

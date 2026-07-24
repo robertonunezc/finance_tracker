@@ -76,6 +76,33 @@ class ReceiptFileHashTests(TestCase):
         self.assertEqual(result.image_url, "media/uploads/a.jpg")
         self.assertFalse(result.created)
 
+    def test_inactive_receipt_with_same_hash_does_not_block_new_active_receipt(self):
+        receipt_services.create_receipt_with_file_hash(
+            ReceiptData(user_id="user-a", image_url="media/uploads/old.jpg", status="completed"),
+            "d" * 64,
+        )
+        Receipt.objects.update(is_active=False)
+
+        created = receipt_services.create_receipt_with_file_hash(
+            ReceiptData(user_id="user-a", image_url="media/uploads/new.jpg", status="pending"),
+            "d" * 64,
+        )
+
+        self.assertTrue(created.created)
+        self.assertEqual(Receipt.objects.filter(user_id="user-a", file_hash="d" * 64).count(), 2)
+        self.assertEqual(Receipt.objects.filter(is_active=True).count(), 1)
+
+    def test_file_hash_lookup_ignores_inactive_receipts(self):
+        receipt_services.create_receipt_with_file_hash(
+            ReceiptData(user_id="user-a", image_url="media/uploads/old.jpg", status="completed"),
+            "e" * 64,
+        )
+        Receipt.objects.update(is_active=False)
+
+        result = receipt_services.get_receipt_by_user_and_file_hash("user-a", "e" * 64)
+
+        self.assertIsNone(result)
+
 
 class ReceiptReviewStatusTests(TestCase):
     def test_needs_review_is_valid_receipt_status(self):
@@ -97,6 +124,11 @@ class ReceiptReviewStatusTests(TestCase):
         indexes = [tuple(index.fields) for index in ReceiptExtractionReview._meta.indexes]
 
         self.assertIn(("status", "-updated_at"), indexes)
+
+    def test_active_file_hash_constraint_is_scoped_to_active_receipts(self):
+        constraints = {constraint.name: constraint for constraint in Receipt._meta.constraints}
+
+        self.assertIn("unique_active_receipt_file_hash_per_user", constraints)
 
 
 class ReceiptDuplicateActionTests(TestCase):
@@ -340,7 +372,8 @@ class ReceiptNotificationTaskTests(TestCase):
         ReceiptItem.objects.create(
             receipt=receipt,
             name="AMZN MX MARKETPLACE",
-            price=1249.00,
+            unit_price=Decimal("1249.00"),
+            line_total=Decimal("1249.00"),
             quantity=1,
             category="electronics",
         )
@@ -439,7 +472,12 @@ class ReceiptExtractionValidationTests(TestCase):
                         "source_text": "AMZN MX MARKETPLACE 1,249.00",
                         "confidence": 0.91,
                     },
-                    "price": {
+                    "unit_price": {
+                        "value": "1249.00",
+                        "source_text": "AMZN MX MARKETPLACE 1,249.00",
+                        "confidence": 0.93,
+                    },
+                    "line_total": {
                         "value": "1249.00",
                         "source_text": "AMZN MX MARKETPLACE 1,249.00",
                         "confidence": 0.93,
@@ -470,13 +508,13 @@ class ReceiptExtractionValidationTests(TestCase):
         from receipt.extraction_review import validate_receipt_extraction
 
         payload = self.valid_payload()
-        payload["items"][0]["price"]["confidence"] = 0.62
+        payload["items"][0]["line_total"]["confidence"] = 0.62
 
         result = validate_receipt_extraction(payload)
 
         self.assertTrue(result.requires_review)
         self.assertEqual(result.issues[0]["code"], "low_confidence")
-        self.assertEqual(result.issues[0]["path"], "items[0].price")
+        self.assertEqual(result.issues[0]["path"], "items[0].line_total")
 
     def test_missing_required_confidence_requires_review(self):
         from receipt.extraction_review import validate_receipt_extraction
@@ -505,13 +543,13 @@ class ReceiptExtractionValidationTests(TestCase):
         from receipt.extraction_review import validate_receipt_extraction
 
         payload = self.valid_payload()
-        payload["items"][0]["price"]["value"] = "12490.00"
+        payload["items"][0]["line_total"]["value"] = "12490.00"
 
         result = validate_receipt_extraction(payload)
 
         self.assertTrue(result.requires_review)
         self.assertEqual(result.issues[0]["code"], "source_amount_mismatch")
-        self.assertEqual(result.issues[0]["path"], "items[0].price")
+        self.assertEqual(result.issues[0]["path"], "items[0].line_total")
 
     def test_blank_total_source_evidence_requires_review(self):
         from receipt.extraction_review import validate_receipt_extraction
@@ -525,17 +563,17 @@ class ReceiptExtractionValidationTests(TestCase):
         self.assertEqual(result.issues[0]["code"], "missing_source_evidence")
         self.assertEqual(result.issues[0]["path"], "total")
 
-    def test_non_amount_item_price_source_evidence_requires_review(self):
+    def test_non_amount_item_line_total_source_evidence_requires_review(self):
         from receipt.extraction_review import validate_receipt_extraction
 
         payload = self.valid_payload()
-        payload["items"][0]["price"]["source_text"] = "AMZN MX MARKETPLACE"
+        payload["items"][0]["line_total"]["source_text"] = "AMZN MX MARKETPLACE"
 
         result = validate_receipt_extraction(payload)
 
         self.assertTrue(result.requires_review)
         self.assertEqual(result.issues[0]["code"], "missing_source_evidence")
-        self.assertEqual(result.issues[0]["path"], "items[0].price")
+        self.assertEqual(result.issues[0]["path"], "items[0].line_total")
 
     def test_human_reviewed_amount_can_skip_source_evidence(self):
         from receipt.extraction_review import validate_receipt_extraction
@@ -543,8 +581,8 @@ class ReceiptExtractionValidationTests(TestCase):
         payload = self.valid_payload()
         payload["total"]["source_text"] = ""
         payload["total"]["reviewed"] = True
-        payload["items"][0]["price"]["source_text"] = ""
-        payload["items"][0]["price"]["reviewed"] = True
+        payload["items"][0]["line_total"]["source_text"] = ""
+        payload["items"][0]["line_total"]["reviewed"] = True
 
         result = validate_receipt_extraction(payload)
 
@@ -563,18 +601,18 @@ class ReceiptExtractionValidationTests(TestCase):
         self.assertEqual(result.issues[0]["code"], "invalid_amount")
         self.assertEqual(result.issues[0]["path"], "total")
 
-    def test_zero_item_price_requires_review(self):
+    def test_zero_item_line_total_requires_review(self):
         from receipt.extraction_review import validate_receipt_extraction
 
         payload = self.valid_payload()
-        payload["items"][0]["price"]["value"] = "0.00"
-        payload["items"][0]["price"]["source_text"] = "ITEM 0.00"
+        payload["items"][0]["line_total"]["value"] = "0.00"
+        payload["items"][0]["line_total"]["source_text"] = "ITEM 0.00"
 
         result = validate_receipt_extraction(payload)
 
         self.assertTrue(result.requires_review)
         self.assertEqual(result.issues[0]["code"], "invalid_amount")
-        self.assertEqual(result.issues[0]["path"], "items[0].price")
+        self.assertEqual(result.issues[0]["path"], "items[0].line_total")
 
     def test_item_sum_mismatch_requires_review(self):
         from receipt.extraction_review import validate_receipt_extraction
@@ -656,7 +694,7 @@ class ReceiptExtractionValidationTests(TestCase):
 
         payload = self.valid_payload()
         payload["total"]["source_text"] = "TOTAL 1249.00"
-        payload["items"][0]["price"]["source_text"] = "AMZN MX MARKETPLACE 1249.00"
+        payload["items"][0]["line_total"]["source_text"] = "AMZN MX MARKETPLACE 1249.00"
 
         result = validate_receipt_extraction(payload)
 
@@ -690,7 +728,8 @@ class ReceiptExtractionApplicationTests(TestCase):
         return [
             ReceiptItemData(
                 name="AMZN MX MARKETPLACE",
-                price=1249.00,
+                unit_price=1249.00,
+                line_total=1249.00,
                 quantity=1,
                 category="electronics",
             )
@@ -717,7 +756,7 @@ class ReceiptExtractionApplicationTests(TestCase):
 
         receipt = self.create_pending_receipt()
         payload = self.valid_payload()
-        payload["items"][0]["price"]["confidence"] = 0.62
+        payload["items"][0]["line_total"]["confidence"] = 0.62
 
         result = apply_extraction_result(str(receipt.receipt_id), payload, self.enriched_items())
 
@@ -727,7 +766,7 @@ class ReceiptExtractionApplicationTests(TestCase):
         self.assertEqual(receipt.status, "needs_review")
         self.assertEqual(review.status, "needs_review")
         self.assertEqual(review.issues[0]["code"], "low_confidence")
-        self.assertEqual(review.raw_extraction["items"][0]["price"]["confidence"], 0.62)
+        self.assertEqual(review.raw_extraction["items"][0]["line_total"]["confidence"], 0.62)
 
     def test_raw_extraction_preserves_original_llm_category_before_enrichment(self):
         from receipt.extraction_review import apply_extraction_result
@@ -769,14 +808,15 @@ class ReceiptReviewCorrectionTests(TestCase):
             status="processing",
         )
         payload = ReceiptExtractionValidationTests().valid_payload()
-        payload["items"][0]["price"]["confidence"] = 0.62
+        payload["items"][0]["line_total"]["confidence"] = 0.62
         apply_extraction_result(
             str(receipt.receipt_id),
             payload,
             [
                 ReceiptItemData(
                     name="AMZN MX MARKETPLACE",
-                    price=1249.00,
+                    unit_price=1249.00,
+                    line_total=1249.00,
                     quantity=1,
                     category="electronics",
                 )
@@ -793,7 +833,8 @@ class ReceiptReviewCorrectionTests(TestCase):
             "item_count": "1",
             "item_0_delete": "0",
             "item_0_name": "AMZN MX MARKETPLACE",
-            "item_0_price": price,
+            "item_0_unit_price": price,
+            "item_0_line_total": price,
             "item_0_quantity": "1",
             "item_0_category": "electronics",
         }
@@ -814,7 +855,7 @@ class ReceiptReviewCorrectionTests(TestCase):
         self.assertFalse(result.approved)
         self.assertEqual(receipt.status, "needs_review")
         self.assertEqual(review.status, "needs_review")
-        self.assertEqual(review.corrected_payload["items"][0]["price"]["value"], "12490.00")
+        self.assertEqual(review.corrected_payload["items"][0]["line_total"]["value"], "12490.00")
         self.assertTrue(result.validation.requires_review)
 
     def test_approval_completes_receipt_after_valid_correction(self):
@@ -842,7 +883,7 @@ class ReceiptReviewCorrectionTests(TestCase):
 
         receipt = self.create_review_receipt()
         review = ReceiptExtractionReview.objects.get(receipt=receipt)
-        review.raw_extraction["items"][0]["price"]["source_text"] = "AMZN MX MARKETPLACE 12,490.00"
+        review.raw_extraction["items"][0]["line_total"]["source_text"] = "AMZN MX MARKETPLACE 12,490.00"
         review.raw_extraction["total"]["source_text"] = "TOTAL 12,490.00"
         review.save(update_fields=["raw_extraction"])
 
@@ -866,12 +907,14 @@ class ReceiptReviewCorrectionTests(TestCase):
             "item_0_delete": "1",
             "item_1_delete": "0",
             "item_1_name": "Keyboard",
-            "item_1_price": "600.00",
+            "item_1_unit_price": "600.00",
+            "item_1_line_total": "600.00",
             "item_1_quantity": "1",
             "item_1_category": "electronics",
             "item_2_delete": "0",
             "item_2_name": "Mouse",
-            "item_2_price": "649.00",
+            "item_2_unit_price": "649.00",
+            "item_2_line_total": "649.00",
             "item_2_quantity": "1",
             "item_2_category": "electronics",
         })
@@ -976,6 +1019,17 @@ class ReceiptReviewViewTests(TestCase):
         self.assertContains(response, "Receipt reviews")
         self.assertContains(response, "AMZN MX MARKETPLACE")
 
+    def test_review_queue_hides_inactive_receipts(self):
+        receipt = self.create_review_receipt()
+        receipt.is_active = False
+        receipt.save(update_fields=["is_active"])
+        self.client.force_login(self.create_staff_user())
+
+        response = self.client.get(reverse("receipt-review:queue"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, str(receipt.receipt_id))
+
     def test_detail_exposes_item_add_remove_controls(self):
         receipt = self.create_review_receipt()
         self.client.force_login(self.create_staff_user())
@@ -1027,7 +1081,7 @@ class ReceiptReviewViewTests(TestCase):
 
         response = self.client.get(reverse("receipt-review:detail", args=[receipt.receipt_id]))
 
-        self.assertContains(response, 'data-field-issues="items[0].price"')
+        self.assertContains(response, 'data-field-issues="items[0].line_total"')
         self.assertContains(response, "low_confidence")
 
     def test_detail_preserves_missing_numeric_extraction_values_as_blank(self):
@@ -1042,7 +1096,7 @@ class ReceiptReviewViewTests(TestCase):
         )
         payload = ReceiptExtractionValidationTests().valid_payload()
         payload["total"]["value"] = None
-        payload["items"][0]["price"]["value"] = None
+        payload["items"][0]["line_total"]["value"] = None
         apply_extraction_result(str(receipt.receipt_id), payload, items=None)
         self.client.force_login(self.create_staff_user())
 
@@ -1050,7 +1104,7 @@ class ReceiptReviewViewTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'name="total_amount" type="number" step="0.01" value=""')
-        self.assertContains(response, 'name="item_0_price" type="number" step="0.01" value=""')
+        self.assertContains(response, 'name="item_0_line_total" type="number" step="0.01" value=""')
 
     def test_staff_can_approve_corrected_receipt(self):
         receipt = self.create_review_receipt()
@@ -1176,6 +1230,193 @@ class ReceiptManualUploadViewTests(TestCase):
         self.assertContains(response, "Upload a receipt image or PDF bank statement.")
 
 
+class ReceiptManagementServiceTests(TestCase):
+    def create_completed_receipt(self, *, image_url="media/uploads/source.jpg"):
+        receipt = Receipt.objects.create(
+            user_id="manager-user",
+            purchase_date=timezone.now() - timezone.timedelta(days=2),
+            total_amount=Decimal("125.50"),
+            subtotal_amount=Decimal("140.00"),
+            discount_amount=Decimal("14.50"),
+            store_name="chedraui",
+            image_url=image_url,
+            file_hash="f" * 64,
+            source_type="manual_upload",
+            source_metadata={"origin": "test"},
+            status="completed",
+            extracted_text="old text",
+            extraction_result={"old": "payload"},
+        )
+        ReceiptItem.objects.create(
+            receipt=receipt,
+            name="Milk",
+            unit_price=Decimal("50.00"),
+            line_total=Decimal("100.00"),
+            quantity=2,
+            category="dairy",
+        )
+        ReceiptExtractionReview.objects.create(
+            receipt=receipt,
+            status="needs_review",
+            overall_confidence=0.4,
+            issues=[{"code": "old"}],
+            raw_extraction={"old": "raw"},
+        )
+        return receipt
+
+    def test_reset_receipt_for_reprocessing_clears_extracted_state_and_items(self):
+        receipt = self.create_completed_receipt()
+
+        reset = receipt_services.reset_receipt_for_reprocessing(str(receipt.receipt_id))
+
+        receipt.refresh_from_db()
+        self.assertEqual(reset.receipt_id, receipt.receipt_id)
+        self.assertEqual(receipt.status, "pending")
+        self.assertEqual(receipt.total_amount, Decimal("0.00"))
+        self.assertIsNone(receipt.subtotal_amount)
+        self.assertIsNone(receipt.discount_amount)
+        self.assertIsNone(receipt.store_name)
+        self.assertIsNone(receipt.extracted_text)
+        self.assertIsNone(receipt.extraction_result)
+        self.assertEqual(receipt.items.count(), 0)
+        self.assertFalse(ReceiptExtractionReview.objects.filter(receipt=receipt).exists())
+
+    def test_reset_receipt_for_reprocessing_preserves_source_identity(self):
+        receipt = self.create_completed_receipt()
+
+        receipt_services.reset_receipt_for_reprocessing(str(receipt.receipt_id))
+
+        receipt.refresh_from_db()
+        self.assertEqual(receipt.user_id, "manager-user")
+        self.assertEqual(receipt.file_hash, "f" * 64)
+        self.assertEqual(receipt.image_url, "media/uploads/source.jpg")
+        self.assertEqual(receipt.source_type, "manual_upload")
+        self.assertEqual(receipt.source_metadata, {"origin": "test"})
+        self.assertTrue(receipt.is_active)
+
+    def test_deactivate_receipt_sets_is_active_false(self):
+        receipt = self.create_completed_receipt()
+
+        receipt_services.deactivate_receipt(str(receipt.receipt_id))
+
+        receipt.refresh_from_db()
+        self.assertFalse(receipt.is_active)
+        self.assertEqual(receipt.items.count(), 1)
+
+    def test_infer_receipt_file_type_uses_pdf_extension(self):
+        self.assertEqual(receipt_services.infer_receipt_file_type("media/uploads/source.pdf"), "pdf")
+        self.assertEqual(receipt_services.infer_receipt_file_type("media/uploads/source.JPG"), "image")
+
+
+class ReceiptManagementViewTests(TestCase):
+    def create_staff_user(self):
+        return get_user_model().objects.create_user(
+            username="manager",
+            password="password",
+            is_staff=True,
+        )
+
+    def create_regular_user(self):
+        return get_user_model().objects.create_user(
+            username="viewer",
+            password="password",
+            is_staff=False,
+        )
+
+    def create_receipt(self, *, is_active=True, status="completed", image_url="media/uploads/source.jpg"):
+        receipt = Receipt.objects.create(
+            user_id="manager-user",
+            purchase_date=timezone.now(),
+            total_amount=Decimal("75.25"),
+            store_name="soriana",
+            image_url=image_url,
+            status=status,
+            is_active=is_active,
+        )
+        ReceiptItem.objects.create(
+            receipt=receipt,
+            name="Apples",
+            unit_price=Decimal("25.00"),
+            line_total=Decimal("75.00"),
+            quantity=3,
+            category="fruits",
+        )
+        return receipt
+
+    def test_receipt_list_requires_staff(self):
+        self.client.force_login(self.create_regular_user())
+
+        response = self.client.get(reverse("receipt-review:list"))
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/admin/login/", response["Location"])
+
+    def test_staff_receipt_list_shows_active_receipts_and_hides_inactive(self):
+        active = self.create_receipt(is_active=True)
+        inactive = self.create_receipt(is_active=False)
+        self.client.force_login(self.create_staff_user())
+
+        response = self.client.get(reverse("receipt-review:list"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, str(active.receipt_id))
+        self.assertNotContains(response, str(inactive.receipt_id))
+        self.assertContains(response, "soriana")
+        self.assertContains(response, "$75.25")
+        self.assertContains(response, "1")
+        self.assertContains(response, "Reprocess")
+        self.assertContains(response, "Delete")
+
+    @patch("receipt.views.process_file_task.delay")
+    def test_reprocess_action_resets_receipt_and_enqueues_processing(self, delay):
+        receipt = self.create_receipt()
+        self.client.force_login(self.create_staff_user())
+
+        response = self.client.post(reverse("receipt-review:reprocess", args=[receipt.receipt_id]))
+
+        receipt.refresh_from_db()
+        self.assertRedirects(response, reverse("receipt-review:list"))
+        self.assertEqual(receipt.status, "pending")
+        self.assertEqual(receipt.items.count(), 0)
+        delay.assert_called_once_with(
+            receipt_id=str(receipt.receipt_id),
+            file_path="media/uploads/source.jpg",
+            file_type="image",
+        )
+
+    @patch("receipt.views.process_file_task.delay")
+    def test_reprocess_action_refuses_missing_source_path(self, delay):
+        receipt = self.create_receipt(image_url="")
+        self.client.force_login(self.create_staff_user())
+
+        response = self.client.post(reverse("receipt-review:reprocess", args=[receipt.receipt_id]))
+
+        receipt.refresh_from_db()
+        self.assertRedirects(response, reverse("receipt-review:list"))
+        self.assertEqual(receipt.status, "completed")
+        self.assertEqual(receipt.items.count(), 1)
+        delay.assert_not_called()
+
+    def test_delete_action_requires_staff(self):
+        receipt = self.create_receipt()
+        self.client.force_login(self.create_regular_user())
+
+        response = self.client.post(reverse("receipt-review:delete", args=[receipt.receipt_id]))
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/admin/login/", response["Location"])
+
+    def test_delete_action_deactivates_and_hides_receipt(self):
+        receipt = self.create_receipt()
+        self.client.force_login(self.create_staff_user())
+
+        response = self.client.post(reverse("receipt-review:delete", args=[receipt.receipt_id]), follow=True)
+
+        receipt.refresh_from_db()
+        self.assertFalse(receipt.is_active)
+        self.assertNotContains(response, str(receipt.receipt_id))
+
+
 class ReceiptReviewReportExclusionTests(TestCase):
     def create_receipt_with_item(self, *, status: str, price: float):
         receipt = Receipt.objects.create(
@@ -1189,7 +1430,8 @@ class ReceiptReviewReportExclusionTests(TestCase):
         ReceiptItem.objects.create(
             receipt=receipt,
             name=f"{status} item",
-            price=price,
+            unit_price=Decimal(str(price)),
+            line_total=Decimal(str(price)),
             quantity=1,
             category="electronics",
         )
@@ -1206,4 +1448,19 @@ class ReceiptReviewReportExclusionTests(TestCase):
 
         self.assertEqual(item_report.item_count, 1)
         self.assertEqual(item_report.total_amount, Decimal("10.00"))
+        self.assertEqual(category_report.grand_total, Decimal("10.00"))
+
+    def test_reports_exclude_inactive_completed_receipts(self):
+        active = self.create_receipt_with_item(status="completed", price=10.00)
+        inactive = self.create_receipt_with_item(status="completed", price=99.00)
+        inactive.is_active = False
+        inactive.save(update_fields=["is_active"])
+
+        from reports.services import CategorySpendingService, ReceiptItemsService
+
+        item_report = ReceiptItemsService.build_report({})
+        category_report = CategorySpendingService.build_report({})
+
+        self.assertEqual(item_report.item_count, 1)
+        self.assertEqual(item_report.rows[0].receipt_id, str(active.receipt_id))
         self.assertEqual(category_report.grand_total, Decimal("10.00"))

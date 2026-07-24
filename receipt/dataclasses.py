@@ -9,8 +9,9 @@ from receipt.models import Category
 @dataclass
 class ReceiptItem:
     name: str
-    price: float
+    line_total: float
     quantity: Optional[int] = 1
+    unit_price: Optional[float] = None
     category: Optional[str] = 'other'
     category_confidence: Optional[float] = None
     embedding: Optional[List[float]] = None 

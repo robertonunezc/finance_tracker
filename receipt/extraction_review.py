@@ -68,7 +68,8 @@ def validate_receipt_extraction(payload: Mapping[str, Any]) -> ValidationResult:
 
     for index, item in enumerate(payload.get("items") or []):
         _validate_required_item_fields(index, item, issues)
-        _validate_source_amount(f"items[{index}].price", item.get("price"), issues)
+        _validate_source_amount(f"items[{index}].line_total", item.get("line_total"), issues)
+        _validate_source_amount(f"items[{index}].unit_price", item.get("unit_price"), issues)
 
     _validate_item_sum(payload, issues)
 
@@ -83,9 +84,9 @@ def validate_receipt_extraction(payload: Mapping[str, Any]) -> ValidationResult:
 
 def build_extraction_payload(ticket: Any, items: list[ReceiptItemData] | None = None) -> dict[str, Any]:
     if isinstance(ticket, Mapping):
-        payload = _json_safe(ticket)
+        payload = _normalize_payload_item_amounts(_json_safe(ticket))
     elif hasattr(ticket, "model_dump"):
-        payload = ticket.model_dump(mode="json")
+        payload = _normalize_payload_item_amounts(ticket.model_dump(mode="json"))
     else:
         payload = {
             "store_name": _coerce_field(getattr(ticket, "store_name", None)),
@@ -95,7 +96,8 @@ def build_extraction_payload(ticket: Any, items: list[ReceiptItemData] | None = 
             "items": [
                 {
                     "name": _coerce_field(getattr(item, "name", None)),
-                    "price": _coerce_field(getattr(item, "price", None)),
+                    "unit_price": _coerce_field(getattr(item, "unit_price", None)),
+                    "line_total": _coerce_field(_object_item_line_total(item)),
                     "quantity": _coerce_field(getattr(item, "quantity", 1)),
                     "category": _coerce_field(getattr(item, "category", Category.OTHER)),
                 }
@@ -109,7 +111,8 @@ def build_extraction_payload(ticket: Any, items: list[ReceiptItemData] | None = 
             if index >= len(payload_items):
                 payload_items.append({})
             payload_items[index].setdefault("name", _coerce_field(item.name))
-            payload_items[index].setdefault("price", _coerce_field(item.price))
+            payload_items[index].setdefault("unit_price", _coerce_field(item.unit_price))
+            payload_items[index].setdefault("line_total", _coerce_field(item.line_total))
             payload_items[index].setdefault("quantity", _coerce_field(item.quantity or 1))
             payload_items[index]["category"] = _merge_field_value(
                 payload_items[index].get("category"),
@@ -191,6 +194,23 @@ def field_value(field: Any) -> Any:
     return _field_raw_value(field)
 
 
+def _normalize_payload_item_amounts(payload: dict[str, Any]) -> dict[str, Any]:
+    for item in payload.get("items") or []:
+        if not isinstance(item, Mapping):
+            continue
+        if "line_total" not in item and "price" in item:
+            item["line_total"] = item["price"]
+        item.pop("price", None)
+    return payload
+
+
+def _object_item_line_total(item: Any) -> Any:
+    line_total = getattr(item, "line_total", None)
+    if line_total is not None:
+        return line_total
+    return getattr(item, "price", None)
+
+
 def _validate_required_receipt_fields(payload: Mapping[str, Any], issues: list[dict[str, Any]]) -> None:
     total = payload.get("total")
     total_amount = _field_decimal(total)
@@ -227,7 +247,7 @@ def _validate_items_present(payload: Mapping[str, Any], issues: list[dict[str, A
 
 def _validate_required_item_fields(index: int, item: Mapping[str, Any], issues: list[dict[str, Any]]) -> None:
     name = item.get("name")
-    price = item.get("price")
+    line_total = item.get("line_total")
     quantity = item.get("quantity")
     category = item.get("category")
 
@@ -240,22 +260,22 @@ def _validate_required_item_fields(index: int, item: Mapping[str, Any], issues: 
             source_text=_field_source(name),
         ))
 
-    price_amount = _field_decimal(price)
-    if price_amount is None:
+    line_total_amount = _field_decimal(line_total)
+    if line_total_amount is None:
         issues.append(_issue(
-            path=f"items[{index}].price",
+            path=f"items[{index}].line_total",
             code="missing_required_value",
-            message="Item price is required.",
-            extracted_value=_field_raw_value(price),
-            source_text=_field_source(price),
+            message="Item line total is required.",
+            extracted_value=_field_raw_value(line_total),
+            source_text=_field_source(line_total),
         ))
-    elif price_amount <= Decimal("0.00"):
+    elif line_total_amount <= Decimal("0.00"):
         issues.append(_issue(
-            path=f"items[{index}].price",
+            path=f"items[{index}].line_total",
             code="invalid_amount",
-            message="Item price must be greater than zero.",
-            extracted_value=_field_raw_value(price),
-            source_text=_field_source(price),
+            message="Item line total must be greater than zero.",
+            extracted_value=_field_raw_value(line_total),
+            source_text=_field_source(line_total),
         ))
 
     if _field_positive_int(quantity) is None:
@@ -287,7 +307,9 @@ def _collect_confidence_issues(
         _collect_field_confidence(field_name, payload.get(field_name), issues, confidences)
 
     for index, item in enumerate(payload.get("items") or []):
-        for field_name in ("name", "price", "quantity", "category"):
+        for field_name in ("name", "unit_price", "line_total", "quantity", "category"):
+            if field_name == "unit_price" and _field_is_blank(item.get(field_name)):
+                continue
             _collect_field_confidence(
                 f"items[{index}].{field_name}",
                 item.get(field_name),
@@ -381,19 +403,16 @@ def _validate_item_sum(payload: Mapping[str, Any], issues: list[dict[str, Any]])
     if total is None or total <= Decimal("0.00"):
         return
 
-    line_total = Decimal("0.00")
-    saw_item_price = False
+    items_total = Decimal("0.00")
+    saw_item_total = False
     for item in payload.get("items") or []:
-        price = _field_decimal(item.get("price"))
-        if price is None or price <= Decimal("0.00"):
+        line_total = _field_decimal(item.get("line_total"))
+        if line_total is None or line_total <= Decimal("0.00"):
             continue
-        quantity = _field_positive_int(item.get("quantity"))
-        if quantity is None:
-            continue
-        saw_item_price = True
-        line_total += price * quantity
+        saw_item_total = True
+        items_total += line_total
 
-    if saw_item_price and abs(line_total - total) > ITEM_TOTAL_TOLERANCE:
+    if saw_item_total and abs(items_total - total) > ITEM_TOTAL_TOLERANCE:
         issues.append(_issue(
             path="total",
             code="item_sum_mismatch",
@@ -427,6 +446,12 @@ def _field_decimal(field: Any) -> Decimal | None:
         return Decimal(str(value).replace(",", "")).quantize(Decimal("0.01"))
     except (InvalidOperation, ValueError):
         return None
+
+
+def _optional_float(value: Decimal | None) -> float | None:
+    if value is None:
+        return None
+    return float(value)
 
 
 def _field_positive_int(field: Any) -> int | None:
@@ -514,7 +539,8 @@ def _replace_receipt_items(
         ReceiptItem.objects.create(
             receipt=receipt,
             name=item.name,
-            price=float(item.price),
+            unit_price=item.unit_price,
+            line_total=item.line_total,
             quantity=_positive_int_value(item.quantity) or 1,
             category=item.category or Category.OTHER,
             embedding=item.embedding,
@@ -524,7 +550,8 @@ def _replace_receipt_items(
 def _payload_item_to_dataclass(item: Mapping[str, Any]) -> ReceiptItemData:
     return ReceiptItemData(
         name=str(_field_raw_value(item.get("name")) or ""),
-        price=float(_field_decimal(item.get("price")) or Decimal("0.00")),
+        unit_price=_optional_float(_field_decimal(item.get("unit_price"))),
+        line_total=float(_field_decimal(item.get("line_total")) or Decimal("0.00")),
         quantity=_field_positive_int(item.get("quantity")) or 1,
         category=str(_field_raw_value(item.get("category")) or Category.OTHER),
     )
@@ -658,9 +685,14 @@ def _corrected_item(
 ) -> dict[str, Any]:
     raw_items = raw_extraction.get("items") or []
     raw_item = raw_items[index] if index < len(raw_items) else {}
+    raw_line_total = raw_item.get("line_total") or raw_item.get("price")
+    line_total_value = form_data.get(f"item_{index}_line_total")
+    if line_total_value is None:
+        line_total_value = form_data.get(f"item_{index}_price")
     return {
         "name": _corrected_field(form_data.get(f"item_{index}_name"), raw_item.get("name")),
-        "price": _corrected_field(form_data.get(f"item_{index}_price"), raw_item.get("price")),
+        "unit_price": _corrected_field(form_data.get(f"item_{index}_unit_price"), raw_item.get("unit_price")),
+        "line_total": _corrected_field(line_total_value, raw_line_total),
         "quantity": _corrected_field(form_data.get(f"item_{index}_quantity") or "1", raw_item.get("quantity")),
         "category": _corrected_field(form_data.get(f"item_{index}_category"), raw_item.get("category")),
     }

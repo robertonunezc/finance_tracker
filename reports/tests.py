@@ -11,6 +11,36 @@ from django.utils import timezone
 from receipt.models import Receipt, ReceiptItem
 
 
+class ReceiptItemsLineTotalReportTests(TestCase):
+    def test_reports_use_stored_line_total_without_multiplying_quantity(self):
+        receipt = Receipt.objects.create(
+            user_id="report-user",
+            purchase_date=timezone.now(),
+            total_amount=Decimal("20.00"),
+            image_url="receipt.jpg",
+            status="completed",
+            store_name="Corner Market",
+        )
+        ReceiptItem.objects.create(
+            receipt=receipt,
+            name="Milk",
+            unit_price=Decimal("10.00"),
+            line_total=Decimal("20.00"),
+            quantity=2,
+            category="groceries",
+        )
+
+        from reports.services import CategorySpendingService, ReceiptItemsService
+
+        item_report = ReceiptItemsService.build_report({})
+        category_report = CategorySpendingService.build_report({})
+
+        self.assertEqual(item_report.rows[0].unit_price, Decimal("10.00"))
+        self.assertEqual(item_report.rows[0].line_total, Decimal("20.00"))
+        self.assertEqual(item_report.total_amount, Decimal("20.00"))
+        self.assertEqual(category_report.grand_total, Decimal("20.00"))
+
+
 class ReceiptItemsTicketImageTests(TestCase):
     def create_user(self):
         return get_user_model().objects.create_user(
@@ -30,7 +60,8 @@ class ReceiptItemsTicketImageTests(TestCase):
         ReceiptItem.objects.create(
             receipt=receipt,
             name="Milk",
-            price=12.50,
+            unit_price=Decimal("12.50"),
+            line_total=Decimal("12.50"),
             quantity=1,
             category="groceries",
         )
@@ -79,6 +110,21 @@ class ReceiptItemsTicketImageTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(b"".join(response.streaming_content), b"jpeg-bytes")
         self.assertEqual(response["Content-Type"], "image/jpeg")
+
+    def test_inactive_receipt_cannot_load_ticket_image(self):
+        receipt = self.create_completed_receipt()
+        receipt.is_active = False
+        receipt.save(update_fields=["is_active"])
+        source_path = settings.MEDIA_ROOT / "uploads" / "report-source.jpg"
+        os.makedirs(source_path.parent, exist_ok=True)
+        with open(source_path, "wb") as source_file:
+            source_file.write(b"jpeg-bytes")
+        self.addCleanup(lambda: source_path.exists() and source_path.unlink())
+        self.client.force_login(self.create_user())
+
+        response = self.client.get(self.ticket_image_path(receipt))
+
+        self.assertEqual(response.status_code, 404)
 
     @override_settings(MEDIA_ROOT=settings.BASE_DIR / "alternate-media")
     def test_logged_in_user_can_load_project_relative_media_path(self):

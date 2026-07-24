@@ -29,6 +29,25 @@ class NormalizeStoreNameTests(TestCase):
         self.assertIsNone(normalize_store_name(None))
 
 
+class TicketLineTotalSchemaTests(TestCase):
+    def test_item_schema_separates_unit_price_from_line_total(self):
+        ticket = Ticket(
+            items=[
+                Item(
+                    name=TextExtractionField(value="LECHE", source_text="LECHE", confidence=0.95),
+                    unit_price=AmountExtractionField(value=10.00, source_text="PRECIO 10.00", confidence=0.94),
+                    line_total=AmountExtractionField(value=20.00, source_text="TOTAL 20.00", confidence=0.96),
+                    quantity=IntegerExtractionField(value=2, source_text="CANT 2", confidence=0.95),
+                    category=TextExtractionField(value="groceries", source_text="LECHE", confidence=0.8),
+                )
+            ],
+            total=AmountExtractionField(value=20.00, source_text="TOTAL 20.00", confidence=0.95),
+        )
+
+        self.assertEqual(ticket.items[0].unit_price.value, 10.00)
+        self.assertEqual(ticket.items[0].line_total.value, 20.00)
+
+
 class TicketExtractionRetryTests(TestCase):
     def validation_error(self):
         try:
@@ -54,7 +73,8 @@ class TicketExtractionRetryTests(TestCase):
             items=[
                 Item(
                     name=TextExtractionField(value="LECHE", source_text="LECHE", confidence=0.95),
-                    price=AmountExtractionField(value=42.5, source_text="$42.50", confidence=0.95),
+                    unit_price=AmountExtractionField(value=42.5, source_text="$42.50", confidence=0.95),
+                    line_total=AmountExtractionField(value=42.5, source_text="$42.50", confidence=0.95),
                     quantity=IntegerExtractionField(value=1, source_text="1", confidence=0.95),
                     category=TextExtractionField(value="groceries", source_text="LECHE", confidence=0.8),
                 )
@@ -133,7 +153,12 @@ class ProcessFileTaskReviewIntegrationTests(TestCase):
                         "source_text": "AMZN MX MARKETPLACE 1,249.00",
                         "confidence": 0.91,
                     },
-                    price={
+                    unit_price={
+                        "value": 1249.00,
+                        "source_text": "AMZN MX MARKETPLACE 1,249.00",
+                        "confidence": 0.93,
+                    },
+                    line_total={
                         "value": 1249.00,
                         "source_text": "AMZN MX MARKETPLACE 1,249.00",
                         "confidence": 0.93,
@@ -191,7 +216,8 @@ class ProcessFileTaskReviewIntegrationTests(TestCase):
             [
                 ReceiptItemData(
                     name="AMZN MX MARKETPLACE",
-                    price=1249.00,
+                    unit_price=1249.00,
+                    line_total=1249.00,
                     quantity=1,
                     category="electronics",
                     embedding=[0.1, 0.2],

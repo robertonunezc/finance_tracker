@@ -120,7 +120,8 @@
               <tr>
                 <th>Item</th>
                 <th class="text-end">Qty</th>
-                <th class="text-end">Price</th>
+                <th class="text-end">Unit price</th>
+                <th class="text-end">Line total</th>
                 <th>Category</th>
                 <th class="text-end">Actions</th>
               </tr>
@@ -146,10 +147,18 @@
                     {% endif %}
                   </td>
                   <td>
-                    <input class="form-control text-end" name="item_{{ row.index }}_price" type="number" step="0.01" value="{{ row.item.price }}">
-                    {% if row.issues.price %}
-                      <div class="field-issue-list justify-content-end" data-field-issues="items[{{ row.index }}].price">
-                        {% for issue in row.issues.price %}<span class="field-issue">{{ issue.code }}</span>{% endfor %}
+                    <input class="form-control text-end" name="item_{{ row.index }}_unit_price" type="number" step="0.01" value="{{ row.item.unit_price }}">
+                    {% if row.issues.unit_price %}
+                      <div class="field-issue-list justify-content-end" data-field-issues="items[{{ row.index }}].unit_price">
+                        {% for issue in row.issues.unit_price %}<span class="field-issue">{{ issue.code }}</span>{% endfor %}
+                      </div>
+                    {% endif %}
+                  </td>
+                  <td>
+                    <input class="form-control text-end" name="item_{{ row.index }}_line_total" type="number" step="0.01" value="{{ row.item.line_total }}">
+                    {% if row.issues.line_total %}
+                      <div class="field-issue-list justify-content-end" data-field-issues="items[{{ row.index }}].line_total">
+                        {% for issue in row.issues.line_total %}<span class="field-issue">{{ issue.code }}</span>{% endfor %}
                       </div>
                     {% endif %}
                   </td>
@@ -180,7 +189,8 @@
               <input class="form-control" name="item___index___name" value="">
             </td>
             <td><input class="form-control text-end" name="item___index___quantity" type="number" min="1" value="1"></td>
-            <td><input class="form-control text-end" name="item___index___price" type="number" step="0.01" value=""></td>
+            <td><input class="form-control text-end" name="item___index___unit_price" type="number" step="0.01" value=""></td>
+            <td><input class="form-control text-end" name="item___index___line_total" type="number" step="0.01" value=""></td>
             <td>
               <select class="form-select" name="item___index___category">
                 {% for value, label in category_options %}

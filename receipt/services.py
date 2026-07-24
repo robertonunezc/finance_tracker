@@ -1,9 +1,10 @@
 import hashlib
 import uuid
 from pathlib import Path
+from urllib.parse import urlparse
 
 from handle_files.services.upload import UploadServiceFactory
-from .models import Receipt, ReceiptItem
+from .models import Receipt, ReceiptExtractionReview, ReceiptItem
 from typing import List, Optional
 from decimal import Decimal
 from django.db import IntegrityError, transaction
@@ -143,7 +144,7 @@ def get_receipt_by_user_and_file_hash(user_id: str, file_hash: str) -> Optional[
         return None
 
     try:
-        receipt = Receipt.objects.get(user_id=user_id, file_hash=file_hash)
+        receipt = Receipt.objects.get(user_id=user_id, file_hash=file_hash, is_active=True)
     except Receipt.DoesNotExist:
         return None
 
@@ -232,7 +233,8 @@ def update_receipt(receipt_id: str, **kwargs) -> ReceiptData:
             ReceiptItem.objects.create(
                 receipt=receipt,
                 name=item.name,
-                price=item.price,
+                unit_price=item.unit_price,
+                line_total=item.line_total,
                 quantity=item.quantity,
                 category=item.category,
                 embedding=item.embedding
@@ -282,7 +284,7 @@ def list_receipts_by_user(user_id: str) -> List[ReceiptData]:
 
         List of ReceiptData objects
     """
-    receipts = Receipt.objects.filter(user_id=user_id).order_by('-purchase_date')
+    receipts = Receipt.objects.filter(user_id=user_id, is_active=True).order_by('-purchase_date')
     receipt_list = []
     for receipt in receipts:
         receipt_list.append(
@@ -303,3 +305,44 @@ def get_closest_match_receipt_item(item_name: str,  new_vector: List[float]) -> 
     return ReceiptItem.objects.annotate(
         distance=CosineDistance('embedding', new_vector)
     ).order_by('distance').first()
+
+
+def reset_receipt_for_reprocessing(receipt_id: str) -> Receipt:
+    with transaction.atomic():
+        receipt = Receipt.objects.select_for_update().get(receipt_id=receipt_id, is_active=True)
+        receipt.items.all().delete()
+        ReceiptExtractionReview.objects.filter(receipt=receipt).delete()
+        receipt.status = "pending"
+        receipt.purchase_date = timezone.now()
+        receipt.total_amount = Decimal("0.00")
+        receipt.subtotal_amount = None
+        receipt.discount_amount = None
+        receipt.store_name = None
+        receipt.extracted_text = None
+        receipt.extraction_result = None
+        receipt.save(
+            update_fields=[
+                "status",
+                "purchase_date",
+                "total_amount",
+                "subtotal_amount",
+                "discount_amount",
+                "store_name",
+                "extracted_text",
+                "extraction_result",
+                "updated_at",
+            ]
+        )
+        return receipt
+
+
+def deactivate_receipt(receipt_id: str) -> Receipt:
+    with transaction.atomic():
+        receipt = Receipt.objects.select_for_update().get(receipt_id=receipt_id, is_active=True)
+        receipt.is_active = False
+        receipt.save(update_fields=["is_active", "updated_at"])
+        return receipt
+
+
+def infer_receipt_file_type(image_url: str) -> str:
+    return "pdf" if Path(urlparse(image_url).path).suffix.lower() == ".pdf" else "image"

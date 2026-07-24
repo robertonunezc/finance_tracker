@@ -77,6 +77,7 @@ class Receipt(models.Model):
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
     extracted_text = models.TextField(null=True, blank=True)
     extraction_result = models.JSONField(null=True, blank=True)
+    is_active = models.BooleanField(default=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -84,8 +85,8 @@ class Receipt(models.Model):
         constraints = [
             models.UniqueConstraint(
                 fields=['user_id', 'file_hash'],
-                condition=models.Q(file_hash__isnull=False),
-                name='unique_receipt_file_hash_per_user',
+                condition=models.Q(file_hash__isnull=False, is_active=True),
+                name='unique_active_receipt_file_hash_per_user',
             ),
         ]
     
@@ -97,10 +98,15 @@ class ReceiptItem(models.Model):
     """ReceiptItem model for storing individual items in a receipt."""
     receipt = models.ForeignKey(Receipt, on_delete=models.CASCADE, related_name='items')
     name = models.CharField(max_length=255)
-    price = models.FloatField()
+    unit_price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    line_total = models.DecimalField(max_digits=10, decimal_places=2)
     quantity = models.IntegerField(default=1)
     category = models.CharField(max_length=20, choices=CATEGORY_CHOICES, default=Category.OTHER)
     embedding = VectorField(dimensions=1536,null=True, blank=True)
+
+    @property
+    def price(self):
+        return self.line_total
     
     def __str__(self):
         return f"{self.name} ({self.receipt.receipt_id})"

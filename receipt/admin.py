@@ -5,7 +5,7 @@ from django.contrib import admin
 
 from .models import Receipt, ReceiptExtractionReview, ReceiptItem
 class ReceiptItemAdmin(admin.ModelAdmin):
-    list_display = ('name', 'price', 'quantity', 'category', 'receipt')
+    list_display = ('name', 'unit_price', 'line_total', 'quantity', 'category', 'receipt')
     list_filter = ('category',)
     search_fields = ('name',)
 class ReceiptItemInline(admin.TabularInline):
@@ -21,8 +21,8 @@ class ReceiptExtractionReviewInline(admin.StackedInline):
 
 class ReceiptAdmin(admin.ModelAdmin):
     inlines = [ReceiptItemInline, ReceiptExtractionReviewInline]
-    list_display = ('receipt_id', 'user_id', 'purchase_date', 'total_amount', 'subtotal_amount', 'discount_amount', 'store_name', 'status', 'created_at', 'updated_at')
-    list_filter = ('status','store_name', 'purchase_date', 'created_at')
+    list_display = ('receipt_id', 'user_id', 'purchase_date', 'total_amount', 'subtotal_amount', 'discount_amount', 'store_name', 'status', 'is_active', 'created_at', 'updated_at')
+    list_filter = ('status', 'is_active', 'store_name', 'purchase_date', 'created_at')
     search_fields = ('receipt_id', 'user_id')
 
 

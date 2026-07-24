@@ -12,6 +12,7 @@ from django.db.models import Count
 from django.http import FileResponse, Http404
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
+from django.views.decorators.http import require_POST
 
 from extract_info.tasks import process_file_task
 from receipt import extraction_review
@@ -21,6 +22,49 @@ from receipt.forms import ReceiptUploadForm
 from receipt.models import Category, Receipt, ReceiptExtractionReview
 
 logger = logging.getLogger(__name__)
+
+
+@staff_member_required
+def receipt_list(request):
+    receipts = (
+        Receipt.objects.filter(is_active=True)
+        .annotate(item_count=Count("items"))
+        .order_by("-updated_at", "-created_at")
+    )
+    return render(request, "receipt/list.html", {"receipts": receipts})
+
+
+@staff_member_required
+@require_POST
+def reprocess_receipt(request, receipt_id):
+    receipt = get_object_or_404(Receipt, receipt_id=receipt_id, is_active=True)
+    if not receipt.image_url:
+        messages.error(request, "Receipt cannot be reprocessed because it has no source file.")
+        return redirect(reverse("receipt-review:list"))
+
+    receipt = receipt_services.reset_receipt_for_reprocessing(str(receipt.receipt_id))
+    file_type = receipt_services.infer_receipt_file_type(receipt.image_url)
+    try:
+        process_file_task.delay(
+            receipt_id=str(receipt.receipt_id),
+            file_path=receipt.image_url,
+            file_type=file_type,
+        )
+    except Exception:
+        logger.exception("Failed to enqueue receipt reprocessing for %s", receipt.receipt_id)
+        messages.error(request, "Receipt was reset but could not be queued for reprocessing.")
+    else:
+        messages.success(request, f"Receipt {receipt.receipt_id} queued for reprocessing.")
+    return redirect(reverse("receipt-review:list"))
+
+
+@staff_member_required
+@require_POST
+def delete_receipt(request, receipt_id):
+    receipt = get_object_or_404(Receipt, receipt_id=receipt_id, is_active=True)
+    receipt_services.deactivate_receipt(str(receipt.receipt_id))
+    messages.success(request, "Receipt deleted.")
+    return redirect(reverse("receipt-review:list"))
 
 
 @staff_member_required
@@ -90,7 +134,7 @@ def review_queue(request):
     reviews = (
         ReceiptExtractionReview.objects.select_related("receipt")
         .prefetch_related("receipt__items")
-        .filter(status="needs_review", receipt__status="needs_review")
+        .filter(status="needs_review", receipt__status="needs_review", receipt__is_active=True)
         .annotate(item_count=Count("receipt__items"))
         .order_by("-updated_at")
     )
@@ -117,6 +161,7 @@ def review_detail(request, receipt_id):
     receipt = get_object_or_404(
         Receipt.objects.prefetch_related("items"),
         receipt_id=receipt_id,
+        is_active=True,
     )
     review = get_object_or_404(ReceiptExtractionReview, receipt=receipt)
 
@@ -163,7 +208,7 @@ def review_detail(request, receipt_id):
 
 @staff_member_required
 def review_source(request, receipt_id):
-    receipt = get_object_or_404(Receipt, receipt_id=receipt_id)
+    receipt = get_object_or_404(Receipt, receipt_id=receipt_id, is_active=True)
     image_url = receipt.image_url or ""
     if image_url.startswith(("http://", "https://")):
         return redirect(image_url)
@@ -208,7 +253,8 @@ def _build_item_rows(receipt, payload, issue_map):
                 "item": {
                     "name": _field_display(item.get("name")),
                     "quantity": _field_display(item.get("quantity"), default="1"),
-                    "price": _field_display(item.get("price")),
+                    "unit_price": _field_display(item.get("unit_price")),
+                    "line_total": _field_display(item.get("line_total") or item.get("price")),
                     "category": _field_display(item.get("category"), default=Category.OTHER),
                 },
             }
@@ -221,7 +267,8 @@ def _build_item_rows(receipt, payload, issue_map):
                 "item": {
                     "name": item.name,
                     "quantity": str(item.quantity),
-                    "price": f"{item.price:.2f}",
+                    "unit_price": f"{item.unit_price:.2f}" if item.unit_price is not None else "",
+                    "line_total": f"{item.line_total:.2f}",
                     "category": item.category,
                 },
             }
@@ -233,7 +280,8 @@ def _build_item_rows(receipt, payload, issue_map):
         row["issues"] = {
             "name": issue_map.get(f"items[{index}].name", []),
             "quantity": issue_map.get(f"items[{index}].quantity", []),
-            "price": issue_map.get(f"items[{index}].price", []),
+            "unit_price": issue_map.get(f"items[{index}].unit_price", []),
+            "line_total": issue_map.get(f"items[{index}].line_total", []),
             "category": issue_map.get(f"items[{index}].category", []),
         }
     return rows

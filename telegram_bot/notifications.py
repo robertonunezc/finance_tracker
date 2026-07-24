@@ -47,7 +47,7 @@ def build_receipt_processed_message(receipt) -> str:
         )
 
     for item in items:
-        message_text += f"- {item.name} (x{item.quantity}): ${item.price:,.2f}\n"
+        message_text += f"- {item.name} (x{item.quantity}): ${item.line_total:,.2f}\n"
     return message_text
 
 

@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+{% load humanize static %}
+
+{% block title %}Receipts{% endblock %}
+{% block receipts_nav_class %}active{% endblock %}
+{% block styles %}<link rel="stylesheet" href="{% static 'receipt/review.css' %}">{% endblock %}
+
+{% block content %}
+<div class="d-flex flex-column flex-lg-row align-items-lg-end justify-content-between gap-3 mb-4">
+  <div>
+    <p class="eyebrow mb-2">Receipt manager</p>
+    <h1 class="display-6 fw-bold mb-2">Receipts</h1>
+    <p class="text-secondary mb-0">Active receipts available for review, reprocessing, or deletion.</p>
+  </div>
+  <div class="review-summary px-3 py-2">
+    <span class="text-secondary small d-block">Active receipts</span>
+    <strong>{{ receipts|length|intcomma }}</strong>
+  </div>
+</div>
+
+{% if messages %}
+  {% for message in messages %}
+    <div class="alert alert-{{ message.tags|default:'info' }}" role="alert">{{ message }}</div>
+  {% endfor %}
+{% endif %}
+
+<section class="card review-card border-0">
+  <div class="card-body p-0">
+    {% if receipts %}
+      <div class="table-responsive">
+        <table class="table review-table align-middle mb-0">
+          <thead>
+            <tr>
+              <th>Receipt</th>
+              <th>Store</th>
+              <th>Status</th>
+              <th>Date</th>
+              <th class="text-end">Items</th>
+              <th class="text-end">Total</th>
+              <th>Source</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for receipt in receipts %}
+              <tr>
+                <td>
+                  <div class="fw-semibold">{{ receipt.receipt_id }}</div>
+                  <div class="text-secondary small">{{ receipt.updated_at|naturaltime }}</div>
+                </td>
+                <td>{{ receipt.store_name|default:"Unknown store" }}</td>
+                <td><span class="badge text-bg-light">{{ receipt.get_status_display }}</span></td>
+                <td>{{ receipt.purchase_date|date:"M j, Y" }}</td>
+                <td class="text-end">{{ receipt.item_count|intcomma }}</td>
+                <td class="text-end">${{ receipt.total_amount|floatformat:2|intcomma }}</td>
+                <td>
+                  <div>{{ receipt.get_source_type_display }}</div>
+                  {% if receipt.image_url %}
+                    <a class="small" href="{% url 'receipt-review:source' receipt.receipt_id %}" target="_blank" rel="noopener noreferrer">Open source</a>
+                  {% else %}
+                    <span class="text-secondary small">No source</span>
+                  {% endif %}
+                </td>
+                <td class="text-end">
+                  <div class="dropdown">
+                    <button class="btn btn-sm btn-outline-dark dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+                      Actions
+                    </button>
+                    <ul class="dropdown-menu dropdown-menu-end">
+                      <li>
+                        <button class="dropdown-item" type="button" data-bs-toggle="modal" data-bs-target="#reprocessReceipt{{ receipt.pk }}">
+                          Reprocess
+                        </button>
+                      </li>
+                      <li>
+                        <button class="dropdown-item text-danger" type="button" data-bs-toggle="modal" data-bs-target="#deleteReceipt{{ receipt.pk }}">
+                          Delete
+                        </button>
+                      </li>
+                    </ul>
+                  </div>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="empty-state">
+        <div class="empty-icon">$</div>
+        <h2 class="h5">No active receipts</h2>
+        <p class="text-secondary mb-0">Uploaded receipts will appear here.</p>
+      </div>
+    {% endif %}
+  </div>
+</section>
+
+{% for receipt in receipts %}
+  <div class="modal fade" id="reprocessReceipt{{ receipt.pk }}" tabindex="-1" aria-labelledby="reprocessReceipt{{ receipt.pk }}Label" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2 class="modal-title fs-5" id="reprocessReceipt{{ receipt.pk }}Label">Reprocess receipt</h2>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          This will clear extracted fields, review data, and all items for {{ receipt.receipt_id }}, then run extraction again from the same source file.
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-dark" data-bs-dismiss="modal">Cancel</button>
+          <form method="post" action="{% url 'receipt-review:reprocess' receipt.receipt_id %}">
+            {% csrf_token %}
+            <button class="btn btn-dark">Reprocess</button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal fade" id="deleteReceipt{{ receipt.pk }}" tabindex="-1" aria-labelledby="deleteReceipt{{ receipt.pk }}Label" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2 class="modal-title fs-5" id="deleteReceipt{{ receipt.pk }}Label">Delete receipt</h2>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          This will hide {{ receipt.receipt_id }} from reports and receipt management. The source file and database history will remain stored.
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-dark" data-bs-dismiss="modal">Cancel</button>
+          <form method="post" action="{% url 'receipt-review:delete' receipt.receipt_id %}">
+            {% csrf_token %}
+            <button class="btn btn-danger">Delete</button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+{% endfor %}
+{% endblock %}

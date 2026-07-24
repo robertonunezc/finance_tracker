@@ -46,8 +46,19 @@ def process_file_task(self, receipt_id: str, file_path: str, file_type: str = "i
         if hasattr(ticket, 'items') and ticket.items:
             for item in ticket.items:
                 item_name = str(extraction_review.field_value(item.name) or "")
-                item_price = extraction_review.field_value(item.price) or 0.0
                 item_quantity = _positive_item_quantity(extraction_review.field_value(item.quantity)) or 1
+                item_unit_price = _positive_item_amount(
+                    extraction_review.field_value(getattr(item, "unit_price", None))
+                )
+                item_line_total = _positive_item_amount(
+                    extraction_review.field_value(getattr(item, "line_total", None))
+                )
+                if item_line_total is None:
+                    item_line_total = _positive_item_amount(
+                        extraction_review.field_value(getattr(item, "price", None))
+                    )
+                if item_line_total is None and item_unit_price is not None:
+                    item_line_total = item_unit_price * Decimal(str(item_quantity))
                 category_confidence = None
                 vector_data = None
                 try:
@@ -62,7 +73,8 @@ def process_file_task(self, receipt_id: str, file_path: str, file_type: str = "i
                     category_confidence = 0.0
                 receipt_item = ReceiptItemData(
                     name=item_name,
-                    price=float(item_price),
+                    unit_price=float(item_unit_price) if item_unit_price is not None else None,
+                    line_total=float(item_line_total or Decimal("0.00")),
                     quantity=item_quantity,
                     category=category,
                     category_confidence=category_confidence,
@@ -105,6 +117,18 @@ def process_file_task(self, receipt_id: str, file_path: str, file_type: str = "i
             logger.error(f"Failed to update failed status for {receipt_id}: {inner_e}")
 
         raise
+
+
+def _positive_item_amount(value):
+    if value in (None, ""):
+        return None
+    try:
+        amount = Decimal(str(value).replace(",", ""))
+    except (InvalidOperation, ValueError):
+        return None
+    if amount <= Decimal("0.00"):
+        return None
+    return amount.quantize(Decimal("0.01"))
 
 
 def _positive_item_quantity(value):

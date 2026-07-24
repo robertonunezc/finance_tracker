@@ -3,7 +3,7 @@ from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Mapping
 
-from django.db.models import DecimalField, ExpressionWrapper, F, Sum
+from django.db.models import DecimalField, Sum
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 
@@ -124,22 +124,18 @@ class CategorySpendingService:
         end_at = timezone.make_aware(
             datetime.combine(end_date + timedelta(days=1), time.min), current_tz
         )
-        line_total = ExpressionWrapper(
-            F("price") * F("quantity"),
-            output_field=DecimalField(max_digits=18, decimal_places=2),
-        )
-
-        # One query performs filtering, multiplication, grouping, and ordering.
+        # One query performs filtering, grouping, and ordering.
         totals = list(
             ReceiptItem.objects.filter(
                 receipt__purchase_date__gte=start_at,
                 receipt__purchase_date__lt=end_at,
                 receipt__status="completed",
+                receipt__is_active=True,
             )
             .values("category")
             .annotate(
                 total=Coalesce(
-                    Sum(line_total),
+                    Sum("line_total"),
                     Decimal("0.00"),
                     output_field=DecimalField(max_digits=18, decimal_places=2),
                 )
@@ -228,7 +224,7 @@ class ReceiptItemsService:
     @classmethod
     def _store_options(cls) -> list[str]:
         return list(
-            Receipt.objects.filter(status="completed")
+            Receipt.objects.filter(status="completed", is_active=True)
             .exclude(store_name__isnull=True)
             .exclude(store_name="")
             .order_by("store_name")
@@ -251,19 +247,14 @@ class ReceiptItemsService:
         end_at = timezone.make_aware(
             datetime.combine(end_date + timedelta(days=1), time.min), current_tz
         )
-        line_total = ExpressionWrapper(
-            F("price") * F("quantity"),
-            output_field=DecimalField(max_digits=18, decimal_places=2),
-        )
-
         queryset = (
             ReceiptItem.objects.select_related("receipt")
             .filter(
                 receipt__purchase_date__gte=start_at,
                 receipt__purchase_date__lt=end_at,
                 receipt__status="completed",
+                receipt__is_active=True,
             )
-            .annotate(line_total=line_total)
             .order_by("-receipt__purchase_date", "name")
         )
         if category:
@@ -284,7 +275,7 @@ class ReceiptItemsService:
                 has_ticket_image=bool(item.receipt.image_url),
                 purchase_date=item.receipt.purchase_date,
                 quantity=item.quantity,
-                unit_price=Decimal(str(item.price)),
+                unit_price=Decimal(str(item.unit_price or "0.00")),
                 line_total=Decimal(str(item.line_total)),
             )
             for item in queryset

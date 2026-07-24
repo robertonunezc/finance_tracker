@@ -20,11 +20,22 @@ REPAIR_ERROR_LIMIT = 8
 EXTRACTION_PROMPT="""
 Extract all readable text from this grocery receipt and structure it as Ticket object.
 The tickets are from Mexico so are in Spanish.
-The quantity data can be in a column with names like: CANT, CANTIDAD. If you cannot extract the quantity, return 1 by default for all the items.
+First identify the product table header and its columns before extracting item rows.
+Common item columns:
+- CANT, CANTIDAD, CANT. -> quantity
+- DESCRIPCION, ARTICULO, PRODUCTO -> raw item name
+- PRECIO, PRICE, P.U., UNIT PRICE -> unit_price
+- TOTAL, IMPORTE -> line_total
+For each product row, extract values by matching the row values to the detected column positions.
+The quantity data can be in a column with names like: CANT, CANTIDAD. If a quantity value is visible in the row, use it. Only return 1 when no quantity is readable for that specific row.
 Always extract the raw item name, do not hallucinate or correct it; use exactly what appears on the receipt.
 For the store name, prefer the canonical commercial name that appears on the receipt. If the receipt includes legal suffixes such as SA DE CV, S.A. DE C.V., S.A. DE C.V, SOCIEDAD ANONIMA, or similar, normalize them away in the final store_name value.
-For product items if the TOTAL column is present, use it as the price. If the TOTAL column is not present, use the PRECIO or PRICE column. If neither is present, use the P.U. or UNIT PRICE column. If none of these columns are present, return null for the price.
-Do not extract items where a minus sign appears in front or after the price, as those are likely discounts or returns.
+For product items, line_total means the row total for that item. If the TOTAL or IMPORTE column is present, always use it as line_total.
+If TOTAL/IMPORTE is not present but unit price and quantity are visible, calculate line_total as quantity multiplied by unit_price and use the full row as source_text with lower confidence.
+unit_price means the single-item price from PRECIO, PRICE, P.U., or UNIT PRICE. If no unit price column is present, return null for unit_price.
+If a row has quantity, unit_price, and line_total, verify line_total is approximately quantity multiplied by unit_price.
+Example: "CANT 2 PRODUCTO LECHE PRECIO 10.00 TOTAL 20.00" -> quantity 2, unit_price 10.00, line_total 20.00.
+Do not extract items where a minus sign appears in front or after the amount, as those are likely discounts or returns.
 Examples:
 - "TIENDAS CHEDRAUI SA DE CV" -> "chedraui"
 - "Soriana S.A. de C.V." -> "soriana"
@@ -58,9 +69,15 @@ class IntegerExtractionField(BaseModel):
 
 
 class Item(BaseModel):
-    name: TextExtractionField = Field(description="Name of the item")
-    price: AmountExtractionField = Field(description="Price of the item")
-    quantity: IntegerExtractionField = Field(description="Quantity of the item")
+    name: TextExtractionField = Field(description="Raw name of the item exactly as printed on the receipt")
+    unit_price: Optional[AmountExtractionField] = Field(
+        default=None,
+        description="Single-item price from PRECIO, PRICE, P.U., or UNIT PRICE. Return null when no unit price is visible.",
+    )
+    line_total: AmountExtractionField = Field(
+        description="Line total for this item row from TOTAL or IMPORTE. This is quantity multiplied by unit price.",
+    )
+    quantity: IntegerExtractionField = Field(description="Quantity from CANT or CANTIDAD. Use 1 only when quantity is not visible.")
     category: TextExtractionField = Field(description="Category of the item")
 
 class Ticket(BaseModel):
