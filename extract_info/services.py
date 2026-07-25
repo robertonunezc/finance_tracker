@@ -17,7 +17,10 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 EXTRACTION_VALIDATION_MAX_ATTEMPTS = 3
 REPAIR_ERROR_LIMIT = 8
-EXTRACTION_PROMPT="""
+CATEGORY_OPTIONS_PROMPT = "\n".join(
+    f"- {value}: {label}" for value, label in Category.choices
+)
+EXTRACTION_PROMPT=f"""
 Extract all readable text from this grocery receipt and structure it as Ticket object.
 The tickets are from Mexico so are in Spanish.
 First identify the product table header and its columns before extracting item rows.
@@ -26,6 +29,7 @@ Common item columns:
 - DESCRIPCION, ARTICULO, PRODUCTO -> raw item name
 - PRECIO, PRICE, P.U., UNIT PRICE -> unit_price
 - TOTAL, IMPORTE -> line_total
+- The item name and receipt context -> category
 For each product row, extract values by matching the row values to the detected column positions.
 The quantity data can be in a column with names like: CANT, CANTIDAD. If a quantity value is visible in the row, use it. Only return 1 when no quantity is readable for that specific row.
 Always extract the raw item name, do not hallucinate or correct it; use exactly what appears on the receipt.
@@ -36,6 +40,9 @@ unit_price means the single-item price from PRECIO, PRICE, P.U., or UNIT PRICE. 
 If a row has quantity, unit_price, and line_total, verify line_total is approximately quantity multiplied by unit_price.
 Example: "CANT 2 PRODUCTO LECHE PRECIO 10.00 TOTAL 20.00" -> quantity 2, unit_price 10.00, line_total 20.00.
 Do not extract items where a minus sign appears in front or after the amount, as those are likely discounts or returns.
+For item category, choose exactly one category key from this list. Return the key, not the Spanish label and not a translated word:
+{CATEGORY_OPTIONS_PROMPT}
+Use "other" only when no specific category fits. For category source_text, use the raw item name or visible row text that supports the category decision.
 Examples:
 - "TIENDAS CHEDRAUI SA DE CV" -> "chedraui"
 - "Soriana S.A. de C.V." -> "soriana"
@@ -62,6 +69,12 @@ class AmountExtractionField(BaseModel):
     confidence: float = Field(ge=0, le=1, description="Confidence score from 0 to 1")
 
 
+class CategoryExtractionField(BaseModel):
+    value: Category = Field(description="Exact category key from the allowed receipt item categories")
+    source_text: str = Field(default="", description="Exact source text used as category evidence")
+    confidence: float = Field(ge=0, le=1, description="Confidence score from 0 to 1")
+
+
 class IntegerExtractionField(BaseModel):
     value: Optional[int] = Field(description="Normalized integer value")
     source_text: str = Field(default="", description="Exact source text used as evidence")
@@ -78,7 +91,7 @@ class Item(BaseModel):
         description="Line total for this item row from TOTAL or IMPORTE. This is quantity multiplied by unit price.",
     )
     quantity: IntegerExtractionField = Field(description="Quantity from CANT or CANTIDAD. Use 1 only when quantity is not visible.")
-    category: TextExtractionField = Field(description="Category of the item")
+    category: CategoryExtractionField = Field(description="Best category key for the item")
 
 class Ticket(BaseModel):
     items: List[Item] = Field(description="List of items found in the ticket")
@@ -123,6 +136,28 @@ def normalize_store_name(value: str | None) -> str | None:
     }
 
     return aliases.get(cleaned, cleaned)
+
+
+def normalize_category_key(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+
+    raw_value = str(value).strip().strip("'\"`").lower()
+    if not raw_value:
+        return None
+
+    key_lookup = {category_value.lower(): category_value for category_value, _ in Category.choices}
+    label_lookup = {label.lower(): category_value for category_value, label in Category.choices}
+    if raw_value in key_lookup:
+        return key_lookup[raw_value]
+    if raw_value in label_lookup:
+        return label_lookup[raw_value]
+
+    key_prefix = re.match(r"^([a-z_]+)\s*\(", raw_value)
+    if key_prefix and key_prefix.group(1) in key_lookup:
+        return key_lookup[key_prefix.group(1)]
+
+    return None
 
 
 # Set your API key
@@ -303,7 +338,7 @@ def categorize_item(item:str)->str:
     ])
 
     raw_category = response.choices[0].message.content.strip().strip("'\"")
-    category = category_lookup.get(raw_category.lower(), "other")
+    category = normalize_category_key(raw_category) or category_lookup.get(raw_category.lower(), "other")
     logger.info(f"GPT categorization successful: {category}")
     return category
 

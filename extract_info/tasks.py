@@ -59,18 +59,30 @@ def process_file_task(self, receipt_id: str, file_path: str, file_type: str = "i
                     )
                 if item_line_total is None and item_unit_price is not None:
                     item_line_total = item_unit_price * Decimal(str(item_quantity))
-                category_confidence = None
                 vector_data = None
+                extracted_category, category_confidence = _extracted_item_category(item)
+                category = extracted_category or Category.OTHER
                 try:
                     matched_category, vector_data = extract_info_service.find_nearest_category(item_name_string=item_name)
-                    if matched_category:
+                    matched_category = extract_info_service.normalize_category_key(matched_category)
+                    if matched_category and matched_category != Category.OTHER:
                         category = matched_category
+                        category_confidence = None
+                    elif extracted_category and extracted_category != Category.OTHER:
+                        category = extracted_category
                     else:
-                        category = extract_info_service.categorize_item(item_name)
+                        category = extract_info_service.normalize_category_key(
+                            extract_info_service.categorize_item(item_name)
+                        ) or extracted_category or Category.OTHER
+                        if category != extracted_category:
+                            category_confidence = None
                 except Exception as exc:
                     logger.warning("Category enrichment failed for receipt %s item %s: %s", receipt_id, item_name, exc)
-                    category = Category.OTHER
-                    category_confidence = 0.0
+                    if extracted_category:
+                        category = extracted_category
+                    else:
+                        category = Category.OTHER
+                        category_confidence = 0.0
                 receipt_item = ReceiptItemData(
                     name=item_name,
                     unit_price=float(item_unit_price) if item_unit_price is not None else None,
@@ -117,6 +129,29 @@ def process_file_task(self, receipt_id: str, file_path: str, file_type: str = "i
             logger.error(f"Failed to update failed status for {receipt_id}: {inner_e}")
 
         raise
+
+
+def _extracted_item_category(item):
+    category_field = getattr(item, "category", None)
+    category = extract_info_service.normalize_category_key(
+        extraction_review.field_value(category_field)
+    )
+    if not category:
+        return None, None
+    return category, _field_confidence(category_field)
+
+
+def _field_confidence(field):
+    if isinstance(field, dict):
+        value = field.get("confidence")
+    else:
+        value = getattr(field, "confidence", None)
+    if value is None:
+        return None
+    try:
+        return min(max(float(value), 0.0), 1.0)
+    except (TypeError, ValueError):
+        return None
 
 
 def _positive_item_amount(value):

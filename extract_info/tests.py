@@ -9,11 +9,13 @@ from pydantic import ValidationError
 
 from extract_info.services import (
     AmountExtractionField,
+    CategoryExtractionField,
     IntegerExtractionField,
     Item,
     TextExtractionField,
     Ticket,
     normalize_store_name,
+    normalize_category_key,
 )
 from receipt.dataclasses import ReceiptItem as ReceiptItemData
 
@@ -29,6 +31,18 @@ class NormalizeStoreNameTests(TestCase):
         self.assertIsNone(normalize_store_name(None))
 
 
+class NormalizeCategoryKeyTests(TestCase):
+    def test_accepts_category_keys_labels_and_key_label_output(self):
+        self.assertEqual(normalize_category_key("dairy"), "dairy")
+        self.assertEqual(normalize_category_key("Lácteos"), "dairy")
+        self.assertEqual(normalize_category_key("dairy (Lácteos)"), "dairy")
+        self.assertEqual(normalize_category_key('"other"'), "other")
+
+    def test_rejects_unknown_category_values(self):
+        self.assertIsNone(normalize_category_key("not a category"))
+        self.assertIsNone(normalize_category_key(""))
+
+
 class TicketLineTotalSchemaTests(TestCase):
     def test_item_schema_separates_unit_price_from_line_total(self):
         ticket = Ticket(
@@ -38,7 +52,7 @@ class TicketLineTotalSchemaTests(TestCase):
                     unit_price=AmountExtractionField(value=10.00, source_text="PRECIO 10.00", confidence=0.94),
                     line_total=AmountExtractionField(value=20.00, source_text="TOTAL 20.00", confidence=0.96),
                     quantity=IntegerExtractionField(value=2, source_text="CANT 2", confidence=0.95),
-                    category=TextExtractionField(value="groceries", source_text="LECHE", confidence=0.8),
+                    category=CategoryExtractionField(value="dairy", source_text="LECHE", confidence=0.8),
                 )
             ],
             total=AmountExtractionField(value=20.00, source_text="TOTAL 20.00", confidence=0.95),
@@ -46,6 +60,11 @@ class TicketLineTotalSchemaTests(TestCase):
 
         self.assertEqual(ticket.items[0].unit_price.value, 10.00)
         self.assertEqual(ticket.items[0].line_total.value, 20.00)
+        self.assertEqual(ticket.items[0].category.value, "dairy")
+
+    def test_item_category_schema_rejects_unknown_values(self):
+        with self.assertRaises(ValidationError):
+            CategoryExtractionField(value="OTROS", source_text="LECHE", confidence=0.8)
 
 
 class TicketExtractionRetryTests(TestCase):
@@ -76,7 +95,7 @@ class TicketExtractionRetryTests(TestCase):
                     unit_price=AmountExtractionField(value=42.5, source_text="$42.50", confidence=0.95),
                     line_total=AmountExtractionField(value=42.5, source_text="$42.50", confidence=0.95),
                     quantity=IntegerExtractionField(value=1, source_text="1", confidence=0.95),
-                    category=TextExtractionField(value="groceries", source_text="LECHE", confidence=0.8),
+                    category=CategoryExtractionField(value="groceries", source_text="LECHE", confidence=0.8),
                 )
             ],
             total=AmountExtractionField(value=42.5, source_text="$42.50", confidence=0.95),
@@ -144,33 +163,36 @@ class ReceiptTaskFailureTests(TestCase):
 
 
 class ProcessFileTaskReviewIntegrationTests(TestCase):
-    def ticket(self):
-        return SimpleNamespace(
-            items=[
-                SimpleNamespace(
-                    name={
-                        "value": "AMZN MX MARKETPLACE",
-                        "source_text": "AMZN MX MARKETPLACE 1,249.00",
-                        "confidence": 0.91,
-                    },
-                    unit_price={
-                        "value": 1249.00,
-                        "source_text": "AMZN MX MARKETPLACE 1,249.00",
-                        "confidence": 0.93,
-                    },
-                    line_total={
-                        "value": 1249.00,
-                        "source_text": "AMZN MX MARKETPLACE 1,249.00",
-                        "confidence": 0.93,
-                    },
-                    quantity={
-                        "value": 1,
-                        "source_text": "AMZN MX MARKETPLACE 1,249.00",
-                        "confidence": 0.95,
-                    },
-                )
-            ]
+    def ticket(self, *, category=None):
+        item = SimpleNamespace(
+            name={
+                "value": "AMZN MX MARKETPLACE",
+                "source_text": "AMZN MX MARKETPLACE 1,249.00",
+                "confidence": 0.91,
+            },
+            unit_price={
+                "value": 1249.00,
+                "source_text": "AMZN MX MARKETPLACE 1,249.00",
+                "confidence": 0.93,
+            },
+            line_total={
+                "value": 1249.00,
+                "source_text": "AMZN MX MARKETPLACE 1,249.00",
+                "confidence": 0.93,
+            },
+            quantity={
+                "value": 1,
+                "source_text": "AMZN MX MARKETPLACE 1,249.00",
+                "confidence": 0.95,
+            },
         )
+        if category is not None:
+            item.category = {
+                "value": category,
+                "source_text": "AMZN MX MARKETPLACE",
+                "confidence": 0.88,
+            }
+        return SimpleNamespace(items=[item])
 
     def application_result(self, status):
         return SimpleNamespace(
@@ -265,7 +287,7 @@ class ProcessFileTaskReviewIntegrationTests(TestCase):
     ):
         from extract_info.tasks import process_file_task
 
-        extract_receipt_text.return_value = self.ticket()
+        extract_receipt_text.return_value = self.ticket(category="electronics")
         apply_extraction_result.return_value = self.application_result("needs_review")
 
         result = process_file_task.run("receipt-id", "missing.jpg", "image")
@@ -274,8 +296,39 @@ class ProcessFileTaskReviewIntegrationTests(TestCase):
         apply_extraction_result.assert_called_once()
         _, kwargs = apply_extraction_result.call_args
         self.assertEqual(kwargs["ticket"], extract_receipt_text.return_value)
-        self.assertEqual(kwargs["items"][0].category, "other")
-        self.assertEqual(kwargs["items"][0].category_confidence, 0.0)
+        self.assertEqual(kwargs["items"][0].category, "electronics")
+        self.assertEqual(kwargs["items"][0].category_confidence, 0.88)
+        notify_delay.assert_called_once_with("receipt-id")
+
+    @patch("extract_info.tasks.notify_receipt_processed_task.delay")
+    @patch("extract_info.tasks.extraction_review.apply_extraction_result")
+    @patch("extract_info.tasks.extract_info_service.categorize_item")
+    @patch("extract_info.tasks.extract_info_service.find_nearest_category")
+    @patch("extract_info.tasks.extract_info_service.extract_receipt_text")
+    @patch("extract_info.tasks.receipt_services.update_receipt")
+    def test_process_file_task_does_not_let_historical_other_override_extracted_category(
+        self,
+        update_receipt,
+        extract_receipt_text,
+        find_nearest_category,
+        categorize_item,
+        apply_extraction_result,
+        notify_delay,
+    ):
+        from extract_info.tasks import process_file_task
+
+        extract_receipt_text.return_value = self.ticket(category="dairy")
+        find_nearest_category.return_value = ("other", [0.1, 0.2])
+        apply_extraction_result.return_value = self.application_result("completed")
+
+        result = process_file_task.run("receipt-id", "missing.jpg", "image")
+
+        self.assertTrue(result)
+        categorize_item.assert_not_called()
+        _, kwargs = apply_extraction_result.call_args
+        self.assertEqual(kwargs["items"][0].category, "dairy")
+        self.assertEqual(kwargs["items"][0].category_confidence, 0.88)
+        self.assertEqual(kwargs["items"][0].embedding, [0.1, 0.2])
         notify_delay.assert_called_once_with("receipt-id")
 
     def test_cleanup_policy_preserves_local_uploads(self):
