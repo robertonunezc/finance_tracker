@@ -46,6 +46,14 @@
               <div class="issue-item">
                 <div class="fw-semibold">{{ issue.path }} · {{ issue.code }}</div>
                 <div class="text-secondary small">{{ issue.message }}</div>
+                {% if issue.details %}
+                  <dl class="issue-detail-grid" data-issue-details="blocking:{{ issue.code }}">
+                    <div><dt>Total</dt><dd>${{ issue.details.receipt_total }}</dd></div>
+                    <div><dt>Item lines</dt><dd>${{ issue.details.item_line_total_sum }}</dd></div>
+                    <div><dt>Difference</dt><dd>${{ issue.details.difference }}</dd></div>
+                    <div><dt>Tolerance</dt><dd>${{ issue.details.tolerance }}</dd></div>
+                  </dl>
+                {% endif %}
                 {% if issue.source_text %}<code>{{ issue.source_text }}</code>{% endif %}
               </div>
             {% endfor %}
@@ -79,6 +87,16 @@
               <div class="field-issue-list" data-field-issues="total">
                 {% for issue in receipt_field_issues.total %}<span class="field-issue">{{ issue.code }}</span>{% endfor %}
               </div>
+              {% for issue in receipt_field_issues.total %}
+                {% if issue.details %}
+                  <dl class="issue-detail-grid issue-detail-grid--field" data-issue-details="field:total:{{ issue.code }}">
+                    <div><dt>Total</dt><dd>${{ issue.details.receipt_total }}</dd></div>
+                    <div><dt>Item lines</dt><dd>${{ issue.details.item_line_total_sum }}</dd></div>
+                    <div><dt>Difference</dt><dd>${{ issue.details.difference }}</dd></div>
+                    <div><dt>Tolerance</dt><dd>${{ issue.details.tolerance }}</dd></div>
+                  </dl>
+                {% endif %}
+              {% endfor %}
             {% endif %}
           </div>
           <div class="col-12 col-md-6">

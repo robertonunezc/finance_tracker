@@ -658,6 +658,28 @@ class ReceiptExtractionValidationTests(TestCase):
         self.assertEqual(result.issues[0]["code"], "item_sum_mismatch")
         self.assertEqual(result.issues[0]["path"], "total")
 
+    def test_item_sum_mismatch_includes_compared_values(self):
+        from receipt.extraction_review import validate_receipt_extraction
+
+        payload = self.valid_payload()
+        payload["total"]["value"] = "1300.00"
+        payload["total"]["source_text"] = "TOTAL 1300.00"
+
+        result = validate_receipt_extraction(payload)
+
+        issue = result.issues[0]
+        self.assertEqual(issue["code"], "item_sum_mismatch")
+        self.assertIn("details", issue)
+        self.assertEqual(
+            issue["details"],
+            {
+                "receipt_total": "1300.00",
+                "item_line_total_sum": "1249.00",
+                "difference": "51.00",
+                "tolerance": "1.00",
+            },
+        )
+
     def test_missing_items_require_review(self):
         from receipt.extraction_review import validate_receipt_extraction
 
@@ -1112,6 +1134,36 @@ class ReceiptReviewViewTests(TestCase):
 
         self.assertContains(response, 'data-field-issues="items[0].line_total"')
         self.assertContains(response, "low_confidence")
+
+    def test_detail_renders_item_sum_mismatch_compared_values(self):
+        from receipt.extraction_review import apply_extraction_result
+
+        receipt = Receipt.objects.create(
+            user_id="mismatch-review-user",
+            purchase_date=timezone.now(),
+            total_amount=Decimal("0.00"),
+            image_url="receipt.jpg",
+            status="processing",
+        )
+        payload = ReceiptExtractionValidationTests().valid_payload()
+        payload["total"]["value"] = "1300.00"
+        payload["total"]["source_text"] = "TOTAL 1300.00"
+        apply_extraction_result(str(receipt.receipt_id), payload, items=None)
+        self.client.force_login(self.create_staff_user())
+
+        response = self.client.get(reverse("receipt-review:detail", args=[receipt.receipt_id]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'data-issue-details="blocking:item_sum_mismatch"')
+        self.assertContains(response, 'data-issue-details="field:total:item_sum_mismatch"')
+        self.assertContains(response, "Total")
+        self.assertContains(response, "$1300.00", count=2)
+        self.assertContains(response, "Item lines")
+        self.assertContains(response, "$1249.00", count=2)
+        self.assertContains(response, "Difference")
+        self.assertContains(response, "$51.00", count=2)
+        self.assertContains(response, "Tolerance")
+        self.assertContains(response, "$1.00", count=2)
 
     def test_detail_preserves_missing_numeric_extraction_values_as_blank(self):
         from receipt.extraction_review import apply_extraction_result

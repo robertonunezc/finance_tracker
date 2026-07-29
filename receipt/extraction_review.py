@@ -412,14 +412,22 @@ def _validate_item_sum(payload: Mapping[str, Any], issues: list[dict[str, Any]])
         saw_item_total = True
         items_total += line_total
 
-    if saw_item_total and abs(items_total - total) > ITEM_TOTAL_TOLERANCE:
-        issues.append(_issue(
+    difference = abs(items_total - total)
+    if saw_item_total and difference > ITEM_TOTAL_TOLERANCE:
+        issue = _issue(
             path="total",
             code="item_sum_mismatch",
             message="Receipt total differs from the sum of item line totals.",
             extracted_value=str(total),
             source_text=_field_source(payload.get("total")),
-        ))
+        )
+        issue["details"] = {
+            "receipt_total": str(total),
+            "item_line_total_sum": str(items_total.quantize(Decimal("0.01"))),
+            "difference": str(difference.quantize(Decimal("0.01"))),
+            "tolerance": str(ITEM_TOTAL_TOLERANCE),
+        }
+        issues.append(issue)
 
 
 def _field_raw_value(field: Any) -> Any:
