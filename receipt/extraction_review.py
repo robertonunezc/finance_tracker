@@ -1,5 +1,6 @@
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any, Mapping
@@ -7,6 +8,7 @@ from typing import Any, Mapping
 from django.db import transaction
 from django.utils import timezone
 
+from extract_info import services as extract_info_service
 from receipt.dataclasses import ReceiptItem as ReceiptItemData
 from receipt.models import Category, Receipt, ReceiptExtractionReview, ReceiptItem
 
@@ -538,10 +540,15 @@ def _replace_receipt_items(
     receipt: Receipt,
     payload: Mapping[str, Any],
     items: list[ReceiptItemData] | None,
+    *,
+    item_embedding_fn: Callable[[str], list[float]] | None = None,
 ) -> None:
     receipt.items.all().delete()
     if items is None:
-        items = [_payload_item_to_dataclass(item) for item in payload.get("items") or []]
+        items = [
+            _payload_item_to_dataclass(item, item_embedding_fn=item_embedding_fn)
+            for item in payload.get("items") or []
+        ]
 
     for item in items:
         ReceiptItem.objects.create(
@@ -555,14 +562,34 @@ def _replace_receipt_items(
         )
 
 
-def _payload_item_to_dataclass(item: Mapping[str, Any]) -> ReceiptItemData:
+def _payload_item_to_dataclass(
+    item: Mapping[str, Any],
+    *,
+    item_embedding_fn: Callable[[str], list[float]] | None = None,
+) -> ReceiptItemData:
+    name = str(_field_raw_value(item.get("name")) or "")
+    embedding = _item_embedding(name, item_embedding_fn)
     return ReceiptItemData(
-        name=str(_field_raw_value(item.get("name")) or ""),
+        name=name,
         unit_price=_optional_float(_field_decimal(item.get("unit_price"))),
         line_total=float(_field_decimal(item.get("line_total")) or Decimal("0.00")),
         quantity=_field_positive_quantity(item.get("quantity")) or Decimal("1.000"),
         category=str(_field_raw_value(item.get("category")) or Category.OTHER),
+        embedding=embedding,
     )
+
+
+def _item_embedding(
+    name: str,
+    item_embedding_fn: Callable[[str], list[float]] | None,
+) -> list[float] | None:
+    if not item_embedding_fn or not name:
+        return None
+    try:
+        return item_embedding_fn(name)
+    except Exception:
+        logger.warning("Failed to generate corrected item embedding for %s", name, exc_info=True)
+        return None
 
 
 def _coerce_field(value: Any, confidence: float = 1.0) -> dict[str, Any]:
@@ -613,6 +640,7 @@ def _apply_review_action(
     *,
     approve: bool,
     user: Any,
+    item_embedding_fn: Callable[[str], list[float]] | None = None,
 ) -> ReviewActionResult:
     with transaction.atomic():
         receipt = Receipt.objects.select_for_update().get(receipt_id=receipt_id)
@@ -621,9 +649,13 @@ def _apply_review_action(
         validation = validate_receipt_extraction(corrected_payload)
         approved = approve and not validation.requires_review
         receipt_status = "completed" if approved else "needs_review"
+        if approved and item_embedding_fn is None:
+            item_embedding_fn = extract_info_service.generate_embedding
+        if not approved:
+            item_embedding_fn = None
 
         _save_receipt_values(receipt, review.raw_extraction, corrected_payload, receipt_status, validation)
-        _replace_receipt_items(receipt, corrected_payload, items=None)
+        _replace_receipt_items(receipt, corrected_payload, items=None, item_embedding_fn=item_embedding_fn)
 
         review.corrected_payload = corrected_payload
         review.overall_confidence = validation.overall_confidence

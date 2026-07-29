@@ -848,6 +848,14 @@ class ReceiptExtractionApplicationTests(TestCase):
 
 
 class ReceiptReviewCorrectionTests(TestCase):
+    def setUp(self):
+        self.generate_embedding_patcher = patch(
+            "extract_info.services.generate_embedding",
+            return_value=[0.1] * 1536,
+        )
+        self.generate_embedding_patcher.start()
+        self.addCleanup(self.generate_embedding_patcher.stop)
+
     def create_review_receipt(self):
         from receipt.extraction_review import apply_extraction_result
 
@@ -928,6 +936,63 @@ class ReceiptReviewCorrectionTests(TestCase):
         self.assertEqual(review.status, "approved")
         self.assertEqual(review.approved_by, "admin")
         self.assertIsNotNone(review.approved_at)
+
+    def test_approval_stores_embedding_for_corrected_item_category_memory(self):
+        from receipt.extraction_review import approve_review
+
+        receipt = self.create_review_receipt()
+        data = self.post_data(price="1249.00")
+        data["item_0_name"] = "Corrected Keyboard"
+        data["item_0_category"] = "electronics"
+        embedding = [0.1] * 1536
+
+        with patch(
+            "extract_info.services.generate_embedding",
+            return_value=embedding,
+        ) as generate_embedding:
+            result = approve_review(str(receipt.receipt_id), data, user="admin")
+
+        self.assertTrue(result.approved)
+        item = ReceiptItem.objects.get(receipt=receipt)
+        self.assertEqual(item.name, "Corrected Keyboard")
+        self.assertEqual(item.category, "electronics")
+        self.assertEqual(list(item.embedding), embedding)
+        generate_embedding.assert_called_once_with("Corrected Keyboard")
+
+    def test_approval_succeeds_when_corrected_item_embedding_fails(self):
+        from receipt.extraction_review import approve_review
+
+        receipt = self.create_review_receipt()
+        data = self.post_data(price="1249.00")
+        data["item_0_name"] = "Corrected Keyboard"
+
+        with self.assertLogs("receipt.extraction_review", level="WARNING"):
+            with patch(
+                "extract_info.services.generate_embedding",
+                side_effect=RuntimeError("embedding failed"),
+            ):
+                result = approve_review(str(receipt.receipt_id), data, user="admin")
+
+        self.assertTrue(result.approved)
+        item = ReceiptItem.objects.get(receipt=receipt)
+        self.assertEqual(item.name, "Corrected Keyboard")
+        self.assertIsNone(item.embedding)
+
+    def test_blocked_approval_does_not_store_corrected_item_embedding(self):
+        from receipt.extraction_review import approve_review
+
+        receipt = self.create_review_receipt()
+        data = self.post_data(total="0.00", price="0.00")
+        data["item_0_name"] = "Corrected Keyboard"
+
+        with patch("extract_info.services.generate_embedding") as generate_embedding:
+            result = approve_review(str(receipt.receipt_id), data, user="admin")
+
+        self.assertFalse(result.approved)
+        generate_embedding.assert_not_called()
+        item = ReceiptItem.objects.get(receipt=receipt)
+        self.assertEqual(item.name, "Corrected Keyboard")
+        self.assertIsNone(item.embedding)
 
     def test_approval_allows_corrected_amount_when_original_evidence_was_wrong(self):
         from receipt.extraction_review import approve_review
@@ -1023,6 +1088,14 @@ class ReceiptReviewCorrectionTests(TestCase):
 
 
 class ReceiptReviewViewTests(TestCase):
+    def setUp(self):
+        self.generate_embedding_patcher = patch(
+            "extract_info.services.generate_embedding",
+            return_value=[0.1] * 1536,
+        )
+        self.generate_embedding_patcher.start()
+        self.addCleanup(self.generate_embedding_patcher.stop)
+
     def create_staff_user(self):
         return get_user_model().objects.create_user(
             username="staff",
