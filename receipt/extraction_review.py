@@ -278,11 +278,11 @@ def _validate_required_item_fields(index: int, item: Mapping[str, Any], issues: 
             source_text=_field_source(line_total),
         ))
 
-    if _field_positive_int(quantity) is None:
+    if _field_positive_quantity(quantity) is None:
         issues.append(_issue(
             path=f"items[{index}].quantity",
             code="invalid_quantity",
-            message="Item quantity must be a positive whole number.",
+            message="Item quantity must be a positive number.",
             extracted_value=_field_raw_value(quantity),
             source_text=_field_source(quantity),
         ))
@@ -454,20 +454,20 @@ def _optional_float(value: Decimal | None) -> float | None:
     return float(value)
 
 
-def _field_positive_int(field: Any) -> int | None:
-    return _positive_int_value(_field_raw_value(field))
+def _field_positive_quantity(field: Any) -> Decimal | None:
+    return _positive_quantity_value(_field_raw_value(field))
 
 
-def _positive_int_value(value: Any) -> int | None:
+def _positive_quantity_value(value: Any) -> Decimal | None:
     if value in (None, ""):
         return None
     try:
         quantity = Decimal(str(value).replace(",", ""))
     except (InvalidOperation, ValueError):
         return None
-    if quantity < 1 or quantity != quantity.to_integral_value():
+    if quantity <= Decimal("0.000"):
         return None
-    return int(quantity)
+    return quantity.quantize(Decimal("0.001"))
 
 
 def _field_is_blank(field: Any) -> bool:
@@ -541,7 +541,7 @@ def _replace_receipt_items(
             name=item.name,
             unit_price=item.unit_price,
             line_total=item.line_total,
-            quantity=_positive_int_value(item.quantity) or 1,
+            quantity=_positive_quantity_value(item.quantity) or Decimal("1.000"),
             category=item.category or Category.OTHER,
             embedding=item.embedding,
         )
@@ -552,7 +552,7 @@ def _payload_item_to_dataclass(item: Mapping[str, Any]) -> ReceiptItemData:
         name=str(_field_raw_value(item.get("name")) or ""),
         unit_price=_optional_float(_field_decimal(item.get("unit_price"))),
         line_total=float(_field_decimal(item.get("line_total")) or Decimal("0.00")),
-        quantity=_field_positive_int(item.get("quantity")) or 1,
+        quantity=_field_positive_quantity(item.get("quantity")) or Decimal("1.000"),
         category=str(_field_raw_value(item.get("category")) or Category.OTHER),
     )
 

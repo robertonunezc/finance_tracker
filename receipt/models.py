@@ -1,5 +1,7 @@
-from django.db import models
 import uuid
+from decimal import Decimal
+
+from django.db import models
 from pgvector.django import VectorField
 STATUS_CHOICES = [
         ('pending', 'Pending'),
@@ -100,7 +102,7 @@ class ReceiptItem(models.Model):
     name = models.CharField(max_length=255)
     unit_price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     line_total = models.DecimalField(max_digits=10, decimal_places=2)
-    quantity = models.IntegerField(default=1)
+    quantity = models.DecimalField(max_digits=10, decimal_places=3, default=Decimal("1.000"))
     category = models.CharField(max_length=20, choices=CATEGORY_CHOICES, default=Category.OTHER)
     embedding = VectorField(dimensions=1536,null=True, blank=True)
 

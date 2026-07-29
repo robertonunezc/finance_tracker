@@ -46,7 +46,7 @@ def process_file_task(self, receipt_id: str, file_path: str, file_type: str = "i
         if hasattr(ticket, 'items') and ticket.items:
             for item in ticket.items:
                 item_name = str(extraction_review.field_value(item.name) or "")
-                item_quantity = _positive_item_quantity(extraction_review.field_value(item.quantity)) or 1
+                item_quantity = _positive_item_quantity(extraction_review.field_value(item.quantity)) or Decimal("1.000")
                 item_unit_price = _positive_item_amount(
                     extraction_review.field_value(getattr(item, "unit_price", None))
                 )
@@ -173,9 +173,9 @@ def _positive_item_quantity(value):
         quantity = Decimal(str(value).replace(",", ""))
     except (InvalidOperation, ValueError):
         return None
-    if quantity < 1 or quantity != quantity.to_integral_value():
+    if quantity <= Decimal("0.000"):
         return None
-    return int(quantity)
+    return quantity.quantize(Decimal("0.001"))
 
 
 def should_cleanup_processed_file(file_path: str | None) -> bool:

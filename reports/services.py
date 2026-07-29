@@ -7,6 +7,7 @@ from django.db.models import DecimalField, Sum
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 
+from receipt.formatting import format_quantity
 from receipt.models import Category, Receipt, ReceiptItem
 
 
@@ -37,7 +38,7 @@ class ReceiptItemReportRow:
     store_name: str
     has_ticket_image: bool
     purchase_date: datetime
-    quantity: int
+    quantity: str
     unit_price: Decimal
     line_total: Decimal
 
@@ -274,7 +275,7 @@ class ReceiptItemsService:
                 store_name=item.receipt.store_name or "Unknown store",
                 has_ticket_image=bool(item.receipt.image_url),
                 purchase_date=item.receipt.purchase_date,
-                quantity=item.quantity,
+                quantity=format_quantity(item.quantity),
                 unit_price=Decimal(str(item.unit_price or "0.00")),
                 line_total=Decimal(str(item.line_total)),
             )

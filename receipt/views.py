@@ -18,6 +18,7 @@ from extract_info.tasks import process_file_task
 from receipt import extraction_review
 from receipt import services as receipt_services
 from receipt.dataclasses import ReceiptUploadRequest
+from receipt.formatting import format_quantity
 from receipt.forms import ReceiptUploadForm
 from receipt.models import Category, Receipt, ReceiptExtractionReview
 
@@ -252,7 +253,7 @@ def _build_item_rows(receipt, payload, issue_map):
                 "index": index,
                 "item": {
                     "name": _field_display(item.get("name")),
-                    "quantity": _field_display(item.get("quantity"), default="1"),
+                    "quantity": format_quantity(_field_display(item.get("quantity"), default="1")),
                     "unit_price": _field_display(item.get("unit_price")),
                     "line_total": _field_display(item.get("line_total") or item.get("price")),
                     "category": _field_display(item.get("category"), default=Category.OTHER),
@@ -266,7 +267,7 @@ def _build_item_rows(receipt, payload, issue_map):
                 "index": index,
                 "item": {
                     "name": item.name,
-                    "quantity": str(item.quantity),
+                    "quantity": format_quantity(item.quantity),
                     "unit_price": f"{item.unit_price:.2f}" if item.unit_price is not None else "",
                     "line_total": f"{item.line_total:.2f}",
                     "category": item.category,

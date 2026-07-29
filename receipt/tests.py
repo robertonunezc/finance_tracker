@@ -131,6 +131,37 @@ class ReceiptReviewStatusTests(TestCase):
         self.assertIn("unique_active_receipt_file_hash_per_user", constraints)
 
 
+class ReceiptQuantityStorageTests(TestCase):
+    def test_format_quantity_hides_decimal_padding_but_keeps_fractional_values(self):
+        from receipt.formatting import format_quantity
+
+        self.assertEqual(format_quantity(Decimal("1.000")), "1")
+        self.assertEqual(format_quantity(Decimal("2.000")), "2")
+        self.assertEqual(format_quantity(Decimal("0.545")), "0.545")
+        self.assertEqual(format_quantity(Decimal("2.050")), "2.05")
+
+    def test_receipt_item_quantity_stores_decimal_cant_values(self):
+        receipt = Receipt.objects.create(
+            user_id="quantity-user",
+            purchase_date=timezone.now(),
+            total_amount=Decimal("21.69"),
+            image_url="receipt.jpg",
+            status="completed",
+        )
+
+        item = ReceiptItem.objects.create(
+            receipt=receipt,
+            name="AGUACATE KG",
+            unit_price=Decimal("39.80"),
+            line_total=Decimal("21.69"),
+            quantity=Decimal("0.545"),
+            category="produce",
+        )
+
+        item.refresh_from_db()
+        self.assertEqual(item.quantity, Decimal("0.545"))
+
+
 class ReceiptDuplicateActionTests(TestCase):
     def test_completed_duplicate_skips_processing(self):
         from receipt.services import get_receipt_duplicate_action
@@ -639,7 +670,7 @@ class ReceiptExtractionValidationTests(TestCase):
         self.assertEqual(result.issues[0]["code"], "missing_items")
         self.assertEqual(result.issues[0]["path"], "items")
 
-    def test_fractional_quantity_requires_review(self):
+    def test_fractional_quantity_is_valid(self):
         from receipt.extraction_review import validate_receipt_extraction
 
         payload = self.valid_payload()
@@ -647,9 +678,7 @@ class ReceiptExtractionValidationTests(TestCase):
 
         result = validate_receipt_extraction(payload)
 
-        self.assertTrue(result.requires_review)
-        self.assertEqual(result.issues[0]["code"], "invalid_quantity")
-        self.assertEqual(result.issues[0]["path"], "items[0].quantity")
+        self.assertFalse(result.requires_review)
 
     def test_non_positive_quantity_requires_review(self):
         from receipt.extraction_review import validate_receipt_extraction
@@ -943,7 +972,7 @@ class ReceiptReviewCorrectionTests(TestCase):
         self.assertTrue(result.approved)
         self.assertEqual(receipt.purchase_date, original_purchase_date)
 
-    def test_approval_blocks_invalid_quantity(self):
+    def test_approval_allows_decimal_quantity(self):
         from receipt.extraction_review import approve_review
 
         receipt = self.create_review_receipt()
@@ -953,9 +982,9 @@ class ReceiptReviewCorrectionTests(TestCase):
         result = approve_review(str(receipt.receipt_id), data, user="admin")
 
         receipt.refresh_from_db()
-        self.assertFalse(result.approved)
-        self.assertEqual(receipt.status, "needs_review")
-        self.assertEqual(result.validation.issues[0]["code"], "invalid_quantity")
+        self.assertTrue(result.approved)
+        self.assertEqual(receipt.status, "completed")
+        self.assertEqual(receipt.items.get().quantity, Decimal("1.500"))
 
     def test_approval_blocks_zero_numeric_defaults(self):
         from receipt.extraction_review import approve_review

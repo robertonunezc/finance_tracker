@@ -10,7 +10,7 @@ from receipt.models import Category
 class ReceiptItem:
     name: str
     line_total: float
-    quantity: Optional[int] = 1
+    quantity: Optional[Decimal] = Decimal("1.000")
     unit_price: Optional[float] = None
     category: Optional[str] = 'other'
     category_confidence: Optional[float] = None

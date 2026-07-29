@@ -25,20 +25,22 @@ Extract all readable text from this grocery receipt and structure it as Ticket o
 The tickets are from Mexico so are in Spanish.
 First identify the product table header and its columns before extracting item rows.
 Common item columns:
-- CANT, CANTIDAD, CANT. -> quantity
+- CANT, CANTIDAD, CANT. -> quantity. This may be a decimal weight such as 0.545, 2.065, or 3.865.
 - DESCRIPCION, ARTICULO, PRODUCTO -> raw item name
 - PRECIO, PRICE, P.U., UNIT PRICE -> unit_price
 - TOTAL, IMPORTE -> line_total
 - The item name and receipt context -> category
 For each product row, extract values by matching the row values to the detected column positions.
-The quantity data can be in a column with names like: CANT, CANTIDAD. If a quantity value is visible in the row, use it. Only return 1 when no quantity is readable for that specific row.
+The quantity data can be in a column with names like: CANT, CANTIDAD. If a quantity value is visible in the row, use the exact numeric value, including decimals below 1. Never round, truncate, or coerce quantity to an integer. Only return 1 when no quantity is readable for that specific row.
 Always extract the raw item name, do not hallucinate or correct it; use exactly what appears on the receipt.
 For the store name, prefer the canonical commercial name that appears on the receipt. If the receipt includes legal suffixes such as SA DE CV, S.A. DE C.V., S.A. DE C.V, SOCIEDAD ANONIMA, or similar, normalize them away in the final store_name value.
 For product items, line_total means the row total for that item. If the TOTAL or IMPORTE column is present, always use it as line_total.
 If TOTAL/IMPORTE is not present but unit price and quantity are visible, calculate line_total as quantity multiplied by unit_price and use the full row as source_text with lower confidence.
 unit_price means the single-item price from PRECIO, PRICE, P.U., or UNIT PRICE. If no unit price column is present, return null for unit_price.
 If a row has quantity, unit_price, and line_total, verify line_total is approximately quantity multiplied by unit_price.
-Example: "CANT 2 PRODUCTO LECHE PRECIO 10.00 TOTAL 20.00" -> quantity 2, unit_price 10.00, line_total 20.00.
+Examples:
+- "0.545 AGUACATE KG ... PRECIO 39.80 TOTAL 21.69" -> quantity 0.545, unit_price 39.80, line_total 21.69.
+- "2 CORAZON LECHUGA ... PRECIO 15.80 TOTAL 31.60" -> quantity 2, unit_price 15.80, line_total 31.60.
 Do not extract items where a minus sign appears in front or after the amount, as those are likely discounts or returns.
 For item category, choose exactly one category key from this list. Return the key, not the Spanish label and not a translated word:
 {CATEGORY_OPTIONS_PROMPT}
@@ -75,9 +77,9 @@ class CategoryExtractionField(BaseModel):
     confidence: float = Field(ge=0, le=1, description="Confidence score from 0 to 1")
 
 
-class IntegerExtractionField(BaseModel):
-    value: Optional[int] = Field(description="Normalized integer value")
-    source_text: str = Field(default="", description="Exact source text used as evidence")
+class QuantityExtractionField(BaseModel):
+    value: Optional[float] = Field(description="Exact positive quantity from CANT or CANTIDAD, including decimal weights")
+    source_text: str = Field(default="", description="Exact source text used as quantity evidence")
     confidence: float = Field(ge=0, le=1, description="Confidence score from 0 to 1")
 
 
@@ -90,7 +92,7 @@ class Item(BaseModel):
     line_total: AmountExtractionField = Field(
         description="Line total for this item row from TOTAL or IMPORTE. This is quantity multiplied by unit price.",
     )
-    quantity: IntegerExtractionField = Field(description="Quantity from CANT or CANTIDAD. Use 1 only when quantity is not visible.")
+    quantity: QuantityExtractionField = Field(description="Quantity from CANT or CANTIDAD. Preserve decimal weights exactly. Use 1 only when quantity is not visible.")
     category: CategoryExtractionField = Field(description="Best category key for the item")
 
 class Ticket(BaseModel):

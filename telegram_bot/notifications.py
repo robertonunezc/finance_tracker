@@ -4,6 +4,7 @@ import os
 
 from telegram import Bot
 
+from receipt.formatting import format_quantity
 from receipt.models import ReceiptExtractionReview
 
 logger = logging.getLogger(__name__)
@@ -47,7 +48,7 @@ def build_receipt_processed_message(receipt) -> str:
         )
 
     for item in items:
-        message_text += f"- {item.name} (x{item.quantity}): ${item.line_total:,.2f}\n"
+        message_text += f"- {item.name} (x{format_quantity(item.quantity)}): ${item.line_total:,.2f}\n"
     return message_text
 
 

@@ -10,8 +10,8 @@ from pydantic import ValidationError
 from extract_info.services import (
     AmountExtractionField,
     CategoryExtractionField,
-    IntegerExtractionField,
     Item,
+    QuantityExtractionField,
     TextExtractionField,
     Ticket,
     normalize_store_name,
@@ -51,7 +51,7 @@ class TicketLineTotalSchemaTests(TestCase):
                     name=TextExtractionField(value="LECHE", source_text="LECHE", confidence=0.95),
                     unit_price=AmountExtractionField(value=10.00, source_text="PRECIO 10.00", confidence=0.94),
                     line_total=AmountExtractionField(value=20.00, source_text="TOTAL 20.00", confidence=0.96),
-                    quantity=IntegerExtractionField(value=2, source_text="CANT 2", confidence=0.95),
+                    quantity=QuantityExtractionField(value=2, source_text="CANT 2", confidence=0.95),
                     category=CategoryExtractionField(value="dairy", source_text="LECHE", confidence=0.8),
                 )
             ],
@@ -60,7 +60,23 @@ class TicketLineTotalSchemaTests(TestCase):
 
         self.assertEqual(ticket.items[0].unit_price.value, 10.00)
         self.assertEqual(ticket.items[0].line_total.value, 20.00)
-        self.assertEqual(ticket.items[0].category.value, "dairy")
+
+    def test_item_schema_accepts_decimal_quantity_from_cant_column(self):
+        ticket = Ticket(
+            items=[
+                {
+                    "name": {"value": "AGUACATE KG", "source_text": "AGUACATE KG", "confidence": 0.95},
+                    "unit_price": {"value": 39.80, "source_text": "PRECIO 39.80", "confidence": 0.94},
+                    "line_total": {"value": 21.69, "source_text": "TOTAL 21.69", "confidence": 0.96},
+                    "quantity": {"value": 0.545, "source_text": "CANT 0.545", "confidence": 0.95},
+                    "category": {"value": "produce", "source_text": "AGUACATE KG", "confidence": 0.8},
+                }
+            ],
+            total=AmountExtractionField(value=21.69, source_text="TOTAL 21.69", confidence=0.95),
+        )
+
+        self.assertEqual(ticket.items[0].quantity.value, 0.545)
+        self.assertEqual(ticket.items[0].category.value, "produce")
 
     def test_item_category_schema_rejects_unknown_values(self):
         with self.assertRaises(ValidationError):
@@ -94,7 +110,7 @@ class TicketExtractionRetryTests(TestCase):
                     name=TextExtractionField(value="LECHE", source_text="LECHE", confidence=0.95),
                     unit_price=AmountExtractionField(value=42.5, source_text="$42.50", confidence=0.95),
                     line_total=AmountExtractionField(value=42.5, source_text="$42.50", confidence=0.95),
-                    quantity=IntegerExtractionField(value=1, source_text="1", confidence=0.95),
+                    quantity=QuantityExtractionField(value=1, source_text="1", confidence=0.95),
                     category=CategoryExtractionField(value="groceries", source_text="LECHE", confidence=0.8),
                 )
             ],
@@ -246,6 +262,63 @@ class ProcessFileTaskReviewIntegrationTests(TestCase):
                 )
             ],
         )
+        notify_delay.assert_called_once_with("receipt-id")
+
+    @patch("extract_info.tasks.notify_receipt_processed_task.delay")
+    @patch("extract_info.tasks.extraction_review.apply_extraction_result")
+    @patch("extract_info.tasks.extract_info_service.find_nearest_category")
+    @patch("extract_info.tasks.extract_info_service.extract_receipt_text")
+    @patch("extract_info.tasks.receipt_services.update_receipt")
+    def test_process_file_task_preserves_decimal_quantity_from_cant_column(
+        self,
+        update_receipt,
+        extract_receipt_text,
+        find_nearest_category,
+        apply_extraction_result,
+        notify_delay,
+    ):
+        from extract_info.tasks import process_file_task
+
+        extract_receipt_text.return_value = SimpleNamespace(
+            items=[
+                SimpleNamespace(
+                    name={
+                        "value": "AGUACATE KG",
+                        "source_text": "AGUACATE KG",
+                        "confidence": 0.91,
+                    },
+                    unit_price={
+                        "value": 39.80,
+                        "source_text": "PRECIO 39.80",
+                        "confidence": 0.93,
+                    },
+                    line_total={
+                        "value": 21.69,
+                        "source_text": "TOTAL 21.69",
+                        "confidence": 0.93,
+                    },
+                    quantity={
+                        "value": 0.545,
+                        "source_text": "CANT 0.545",
+                        "confidence": 0.95,
+                    },
+                    category={
+                        "value": "produce",
+                        "source_text": "AGUACATE KG",
+                        "confidence": 0.90,
+                    },
+                )
+            ]
+        )
+        find_nearest_category.return_value = ("produce", [0.1, 0.2])
+        apply_extraction_result.return_value = self.application_result("completed")
+
+        result = process_file_task.run("receipt-id", "missing.jpg", "image")
+
+        self.assertTrue(result)
+        _, kwargs = apply_extraction_result.call_args
+        self.assertEqual(kwargs["items"][0].quantity, Decimal("0.545"))
+        self.assertEqual(kwargs["items"][0].line_total, 21.69)
         notify_delay.assert_called_once_with("receipt-id")
 
     @patch("extract_info.tasks.notify_receipt_processed_task.delay")
