@@ -1208,7 +1208,7 @@ class ReceiptReviewViewTests(TestCase):
         self.assertContains(response, 'data-field-issues="items[0].line_total"')
         self.assertContains(response, "low_confidence")
 
-    def test_detail_renders_item_sum_mismatch_compared_values(self):
+    def test_detail_renders_item_sum_mismatch_compared_values_only_in_blocking_issues(self):
         from receipt.extraction_review import apply_extraction_result
 
         receipt = Receipt.objects.create(
@@ -1228,15 +1228,17 @@ class ReceiptReviewViewTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'data-issue-details="blocking:item_sum_mismatch"')
-        self.assertContains(response, 'data-issue-details="field:total:item_sum_mismatch"')
+        self.assertNotContains(response, 'data-issue-details="field:total:item_sum_mismatch"')
+        self.assertContains(response, 'data-field-issues="total"')
+        self.assertContains(response, "item_sum_mismatch")
         self.assertContains(response, "Total")
-        self.assertContains(response, "$1300.00", count=2)
+        self.assertContains(response, "$1300.00", count=1)
         self.assertContains(response, "Item lines")
-        self.assertContains(response, "$1249.00", count=2)
+        self.assertContains(response, "$1249.00", count=1)
         self.assertContains(response, "Difference")
-        self.assertContains(response, "$51.00", count=2)
+        self.assertContains(response, "$51.00", count=1)
         self.assertContains(response, "Tolerance")
-        self.assertContains(response, "$1.00", count=2)
+        self.assertContains(response, "$1.00", count=1)
 
     def test_detail_preserves_missing_numeric_extraction_values_as_blank(self):
         from receipt.extraction_review import apply_extraction_result

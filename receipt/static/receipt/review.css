@@ -12,7 +12,6 @@
 .issue-detail-grid div { background:rgba(255,255,255,.58); border:1px solid #fed7aa; border-radius:.45rem; padding:.4rem .5rem; }
 .issue-detail-grid dt { color:#9a3412; font-size:.68rem; font-weight:700; text-transform:uppercase; }
 .issue-detail-grid dd { color:#7c2d12; font-size:.86rem; font-weight:800; margin:0; }
-.issue-detail-grid--field { margin-top:.45rem; }
 .field-issue-list { display:flex; flex-wrap:wrap; gap:.35rem; margin-top:.4rem; }
 .field-issue { background:#fff1f2; border:1px solid #fecdd3; border-radius:.45rem; color:#be123c; font-size:.72rem; font-weight:700; line-height:1; padding:.25rem .4rem; }
 .empty-state { align-items:center; display:flex; flex-direction:column; justify-content:center; min-height:340px; text-align:center; }
