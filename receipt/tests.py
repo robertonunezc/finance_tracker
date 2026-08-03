@@ -658,6 +658,55 @@ class ReceiptExtractionValidationTests(TestCase):
         self.assertEqual(result.issues[0]["code"], "item_sum_mismatch")
         self.assertEqual(result.issues[0]["path"], "total")
 
+    def test_discount_adjusts_item_sum_mismatch_comparison(self):
+        from receipt.extraction_review import validate_receipt_extraction
+
+        payload = self.valid_payload()
+        payload["total"]["value"] = "200.00"
+        payload["total"]["source_text"] = "TOTAL 200.00"
+        payload["discount"] = {
+            "value": "10.00",
+            "source_text": "DISCOUNT 10.00",
+            "confidence": 0.93,
+        }
+        payload["items"][0]["line_total"]["value"] = "210.00"
+        payload["items"][0]["line_total"]["source_text"] = "ITEM 210.00"
+
+        result = validate_receipt_extraction(payload)
+
+        self.assertFalse(result.requires_review)
+        self.assertEqual(result.issues, [])
+
+    def test_item_sum_mismatch_with_discount_includes_adjusted_compared_values(self):
+        from receipt.extraction_review import validate_receipt_extraction
+
+        payload = self.valid_payload()
+        payload["total"]["value"] = "200.00"
+        payload["total"]["source_text"] = "TOTAL 200.00"
+        payload["discount"] = {
+            "value": "10.00",
+            "source_text": "DISCOUNT 10.00",
+            "confidence": 0.93,
+        }
+        payload["items"][0]["line_total"]["value"] = "220.00"
+        payload["items"][0]["line_total"]["source_text"] = "ITEM 220.00"
+
+        result = validate_receipt_extraction(payload)
+
+        issue = result.issues[0]
+        self.assertEqual(issue["code"], "item_sum_mismatch")
+        self.assertEqual(
+            issue["details"],
+            {
+                "receipt_total": "200.00",
+                "item_line_total_sum": "220.00",
+                "discount": "10.00",
+                "adjusted_item_total": "210.00",
+                "difference": "10.00",
+                "tolerance": "1.00",
+            },
+        )
+
     def test_item_sum_mismatch_includes_compared_values(self):
         from receipt.extraction_review import validate_receipt_extraction
 
@@ -675,6 +724,8 @@ class ReceiptExtractionValidationTests(TestCase):
             {
                 "receipt_total": "1300.00",
                 "item_line_total_sum": "1249.00",
+                "discount": "0.00",
+                "adjusted_item_total": "1249.00",
                 "difference": "51.00",
                 "tolerance": "1.00",
             },

@@ -405,6 +405,7 @@ def _validate_item_sum(payload: Mapping[str, Any], issues: list[dict[str, Any]])
     if total is None or total <= Decimal("0.00"):
         return
 
+    discount = _field_decimal(payload.get("discount")) or Decimal("0.00")
     items_total = Decimal("0.00")
     saw_item_total = False
     for item in payload.get("items") or []:
@@ -414,7 +415,8 @@ def _validate_item_sum(payload: Mapping[str, Any], issues: list[dict[str, Any]])
         saw_item_total = True
         items_total += line_total
 
-    difference = abs(items_total - total)
+    adjusted_item_total = items_total - discount
+    difference = abs(adjusted_item_total - total)
     if saw_item_total and difference > ITEM_TOTAL_TOLERANCE:
         issue = _issue(
             path="total",
@@ -426,6 +428,8 @@ def _validate_item_sum(payload: Mapping[str, Any], issues: list[dict[str, Any]])
         issue["details"] = {
             "receipt_total": str(total),
             "item_line_total_sum": str(items_total.quantize(Decimal("0.01"))),
+            "discount": str(discount.quantize(Decimal("0.01"))),
+            "adjusted_item_total": str(adjusted_item_total.quantize(Decimal("0.01"))),
             "difference": str(difference.quantize(Decimal("0.01"))),
             "tolerance": str(ITEM_TOTAL_TOLERANCE),
         }
