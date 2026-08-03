@@ -606,6 +606,67 @@ class ReceiptExtractionValidationTests(TestCase):
         self.assertEqual(result.issues[0]["code"], "missing_source_evidence")
         self.assertEqual(result.issues[0]["path"], "items[0].line_total")
 
+    def test_single_quantity_unit_price_can_use_line_total_source_evidence(self):
+        from receipt.extraction_review import validate_receipt_extraction
+
+        payload = self.valid_payload()
+        payload["items"][0]["unit_price"] = None
+
+        result = validate_receipt_extraction(payload)
+
+        self.assertFalse(result.requires_review)
+        self.assertEqual(result.issues, [])
+
+    def test_single_quantity_conflicting_unit_price_without_evidence_requires_review(self):
+        from receipt.extraction_review import validate_receipt_extraction
+
+        payload = self.valid_payload()
+        payload["items"][0]["unit_price"]["value"] = "999.00"
+        payload["items"][0]["unit_price"]["source_text"] = "AMZN MX MARKETPLACE"
+
+        result = validate_receipt_extraction(payload)
+
+        self.assertTrue(result.requires_review)
+        self.assertEqual(result.issues[0]["code"], "missing_source_evidence")
+        self.assertEqual(result.issues[0]["path"], "items[0].unit_price")
+
+    def test_multi_quantity_missing_unit_price_source_evidence_requires_review(self):
+        from receipt.extraction_review import validate_receipt_extraction
+
+        payload = self.valid_payload()
+        payload["items"][0]["quantity"]["value"] = "2"
+        payload["items"][0]["quantity"]["source_text"] = "CANT 2"
+        payload["items"][0]["line_total"]["value"] = "2498.00"
+        payload["items"][0]["line_total"]["source_text"] = "TOTAL 2498.00"
+        payload["items"][0]["unit_price"] = None
+        payload["total"]["value"] = "2498.00"
+        payload["total"]["source_text"] = "TOTAL 2498.00"
+
+        result = validate_receipt_extraction(payload)
+
+        self.assertTrue(result.requires_review)
+        self.assertEqual(result.issues[0]["code"], "missing_source_evidence")
+        self.assertEqual(result.issues[0]["path"], "items[0].unit_price")
+
+    def test_multi_quantity_line_total_as_unit_price_source_evidence_requires_review(self):
+        from receipt.extraction_review import validate_receipt_extraction
+
+        payload = self.valid_payload()
+        payload["items"][0]["quantity"]["value"] = "2"
+        payload["items"][0]["quantity"]["source_text"] = "CANT 2"
+        payload["items"][0]["line_total"]["value"] = "2498.00"
+        payload["items"][0]["line_total"]["source_text"] = "TOTAL 2498.00"
+        payload["items"][0]["unit_price"]["value"] = "2498.00"
+        payload["items"][0]["unit_price"]["source_text"] = "TOTAL 2498.00"
+        payload["total"]["value"] = "2498.00"
+        payload["total"]["source_text"] = "TOTAL 2498.00"
+
+        result = validate_receipt_extraction(payload)
+
+        self.assertTrue(result.requires_review)
+        self.assertEqual(result.issues[0]["code"], "missing_source_evidence")
+        self.assertEqual(result.issues[0]["path"], "items[0].unit_price")
+
     def test_human_reviewed_amount_can_skip_source_evidence(self):
         from receipt.extraction_review import validate_receipt_extraction
 
@@ -671,6 +732,25 @@ class ReceiptExtractionValidationTests(TestCase):
         }
         payload["items"][0]["line_total"]["value"] = "210.00"
         payload["items"][0]["line_total"]["source_text"] = "ITEM 210.00"
+
+        result = validate_receipt_extraction(payload)
+
+        self.assertFalse(result.requires_review)
+        self.assertEqual(result.issues, [])
+
+    def test_discount_does_not_create_mismatch_when_item_sum_already_matches_total(self):
+        from receipt.extraction_review import validate_receipt_extraction
+
+        payload = self.valid_payload()
+        payload["total"]["value"] = "808.30"
+        payload["total"]["source_text"] = "TOTAL M.N. $ 808.30"
+        payload["discount"] = {
+            "value": "37.37",
+            "source_text": "DISCOUNT 37.37",
+            "confidence": 0.93,
+        }
+        payload["items"][0]["line_total"]["value"] = "808.29"
+        payload["items"][0]["line_total"]["source_text"] = "ITEM 808.29"
 
         result = validate_receipt_extraction(payload)
 
@@ -852,6 +932,35 @@ class ReceiptExtractionApplicationTests(TestCase):
         self.assertEqual(ReceiptItem.objects.filter(receipt=receipt).count(), 1)
         self.assertFalse(ReceiptExtractionReview.objects.filter(receipt=receipt).exists())
         self.assertEqual(receipt.extraction_result["validation"]["requires_review"], False)
+
+    def test_single_quantity_item_persists_line_total_as_missing_unit_price(self):
+        from receipt.extraction_review import apply_extraction_result
+
+        receipt = self.create_pending_receipt()
+        payload = self.valid_payload()
+        payload["items"][0]["unit_price"] = None
+        items = [
+            ReceiptItemData(
+                name="AMZN MX MARKETPLACE",
+                unit_price=None,
+                line_total=1249.00,
+                quantity=1,
+                category="electronics",
+            )
+        ]
+
+        result = apply_extraction_result(str(receipt.receipt_id), payload, items)
+
+        item = ReceiptItem.objects.get(receipt=receipt)
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(item.unit_price, Decimal("1249.00"))
+        self.assertEqual(item.line_total, Decimal("1249.00"))
+        receipt.refresh_from_db()
+        self.assertIsNone(receipt.extraction_result["raw_extraction"]["items"][0]["unit_price"])
+        self.assertEqual(
+            receipt.extraction_result["applied_payload"]["items"][0]["unit_price"]["value"],
+            "1249.00",
+        )
 
     def test_low_confidence_extraction_marks_receipt_needs_review(self):
         from receipt.extraction_review import apply_extraction_result
@@ -1290,6 +1399,38 @@ class ReceiptReviewViewTests(TestCase):
         self.assertContains(response, "$51.00", count=1)
         self.assertContains(response, "Tolerance")
         self.assertContains(response, "$1.00", count=1)
+
+    def test_detail_renders_discount_adjusted_item_sum_mismatch_values(self):
+        from receipt.extraction_review import apply_extraction_result
+
+        receipt = Receipt.objects.create(
+            user_id="discount-mismatch-review-user",
+            purchase_date=timezone.now(),
+            total_amount=Decimal("0.00"),
+            image_url="receipt.jpg",
+            status="processing",
+        )
+        payload = ReceiptExtractionValidationTests().valid_payload()
+        payload["total"]["value"] = "200.00"
+        payload["total"]["source_text"] = "TOTAL 200.00"
+        payload["discount"] = {
+            "value": "10.00",
+            "source_text": "DISCOUNT 10.00",
+            "confidence": 0.93,
+        }
+        payload["items"][0]["line_total"]["value"] = "220.00"
+        payload["items"][0]["line_total"]["source_text"] = "ITEM 220.00"
+        apply_extraction_result(str(receipt.receipt_id), payload, items=None)
+        self.client.force_login(self.create_staff_user())
+
+        response = self.client.get(reverse("receipt-review:detail", args=[receipt.receipt_id]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'data-issue-details="blocking:item_sum_mismatch"')
+        self.assertContains(response, "Discount")
+        self.assertContains(response, "$10.00", count=2)
+        self.assertContains(response, "Adjusted item total")
+        self.assertContains(response, "$210.00", count=1)
 
     def test_detail_preserves_missing_numeric_extraction_values_as_blank(self):
         from receipt.extraction_review import apply_extraction_result

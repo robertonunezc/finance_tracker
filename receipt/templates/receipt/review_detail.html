@@ -50,6 +50,10 @@
                   <dl class="issue-detail-grid" data-issue-details="blocking:{{ issue.code }}">
                     <div><dt>Total</dt><dd>${{ issue.details.receipt_total }}</dd></div>
                     <div><dt>Item lines</dt><dd>${{ issue.details.item_line_total_sum }}</dd></div>
+                    {% if issue.details.discount and issue.details.discount != "0.00" %}
+                      <div><dt>Discount</dt><dd>${{ issue.details.discount }}</dd></div>
+                      <div><dt>Adjusted item total</dt><dd>${{ issue.details.adjusted_item_total }}</dd></div>
+                    {% endif %}
                     <div><dt>Difference</dt><dd>${{ issue.details.difference }}</dd></div>
                     <div><dt>Tolerance</dt><dd>${{ issue.details.tolerance }}</dd></div>
                   </dl>

@@ -1,6 +1,6 @@
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Callable, MutableMapping
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any, Mapping
@@ -60,6 +60,10 @@ def parse_amounts_from_source_text(source_text: str) -> list[Decimal]:
 
 
 def validate_receipt_extraction(payload: Mapping[str, Any]) -> ValidationResult:
+    payload = _normalize_payload_item_amounts(
+        _json_safe(payload),
+        derive_single_quantity_unit_price=True,
+    )
     issues: list[dict[str, Any]] = []
     confidences: list[float] = []
 
@@ -71,7 +75,7 @@ def validate_receipt_extraction(payload: Mapping[str, Any]) -> ValidationResult:
     for index, item in enumerate(payload.get("items") or []):
         _validate_required_item_fields(index, item, issues)
         _validate_source_amount(f"items[{index}].line_total", item.get("line_total"), issues)
-        _validate_source_amount(f"items[{index}].unit_price", item.get("unit_price"), issues)
+        _validate_item_unit_price(index, item, issues)
 
     _validate_item_sum(payload, issues)
 
@@ -84,7 +88,12 @@ def validate_receipt_extraction(payload: Mapping[str, Any]) -> ValidationResult:
     )
 
 
-def build_extraction_payload(ticket: Any, items: list[ReceiptItemData] | None = None) -> dict[str, Any]:
+def build_extraction_payload(
+    ticket: Any,
+    items: list[ReceiptItemData] | None = None,
+    *,
+    derive_single_quantity_unit_price: bool = False,
+) -> dict[str, Any]:
     if isinstance(ticket, Mapping):
         payload = _normalize_payload_item_amounts(_json_safe(ticket))
     elif hasattr(ticket, "model_dump"):
@@ -123,7 +132,10 @@ def build_extraction_payload(ticket: Any, items: list[ReceiptItemData] | None = 
             if item.category_confidence is not None:
                 payload_items[index]["category"]["confidence"] = _clamp_confidence(item.category_confidence)
 
-    return payload
+    return _normalize_payload_item_amounts(
+        payload,
+        derive_single_quantity_unit_price=derive_single_quantity_unit_price,
+    )
 
 
 def apply_extraction_result(
@@ -132,7 +144,11 @@ def apply_extraction_result(
     items: list[ReceiptItemData] | None,
 ) -> ExtractionApplicationResult:
     raw_payload = build_extraction_payload(ticket)
-    payload = build_extraction_payload(raw_payload, items)
+    payload = build_extraction_payload(
+        raw_payload,
+        items,
+        derive_single_quantity_unit_price=True,
+    )
     try:
         validation = validate_receipt_extraction(payload)
     except Exception as exc:
@@ -196,13 +212,19 @@ def field_value(field: Any) -> Any:
     return _field_raw_value(field)
 
 
-def _normalize_payload_item_amounts(payload: dict[str, Any]) -> dict[str, Any]:
+def _normalize_payload_item_amounts(
+    payload: dict[str, Any],
+    *,
+    derive_single_quantity_unit_price: bool = False,
+) -> dict[str, Any]:
     for item in payload.get("items") or []:
-        if not isinstance(item, Mapping):
+        if not isinstance(item, MutableMapping):
             continue
         if "line_total" not in item and "price" in item:
             item["line_total"] = item["price"]
         item.pop("price", None)
+        if derive_single_quantity_unit_price:
+            _fill_single_quantity_unit_price(item)
     return payload
 
 
@@ -400,6 +422,51 @@ def _validate_source_amount(path: str, field: Any, issues: list[dict[str, Any]])
         ))
 
 
+def _validate_item_unit_price(index: int, item: Mapping[str, Any], issues: list[dict[str, Any]]) -> None:
+    unit_price = item.get("unit_price")
+    quantity = _field_positive_quantity(item.get("quantity"))
+    line_total = _field_decimal(item.get("line_total"))
+    unit_price_amount = _field_decimal(unit_price)
+
+    if unit_price_amount is not None:
+        if _unit_price_source_is_line_total(item, unit_price_amount, quantity, line_total):
+            issues.append(_missing_source_evidence_issue(f"items[{index}].unit_price", unit_price))
+            return
+        _validate_source_amount(f"items[{index}].unit_price", unit_price, issues)
+        return
+
+    if quantity is None or quantity <= Decimal("1.000") or line_total is None or line_total <= Decimal("0.00"):
+        return
+
+    issues.append(_missing_source_evidence_issue(f"items[{index}].unit_price", unit_price))
+
+
+def _unit_price_source_is_line_total(
+    item: Mapping[str, Any],
+    unit_price_amount: Decimal,
+    quantity: Decimal | None,
+    line_total: Decimal | None,
+) -> bool:
+    if quantity is None or quantity <= Decimal("1.000"):
+        return False
+    if line_total is None or line_total <= Decimal("0.00") or unit_price_amount != line_total:
+        return False
+
+    unit_price_source = _field_source(item.get("unit_price")).strip()
+    return _source_text_looks_like_line_total(unit_price_source)
+
+
+def _source_text_looks_like_line_total(source_text: str) -> bool:
+    if not source_text:
+        return False
+    lower_source = source_text.lower()
+    has_line_total_label = bool(re.search(r"\b(total|importe)\b", lower_source))
+    has_unit_price_label = bool(
+        re.search(r"\b(precio|price|unit price|p\.?\s*u\.?)\b", lower_source)
+    )
+    return has_line_total_label and not has_unit_price_label
+
+
 def _validate_item_sum(payload: Mapping[str, Any], issues: list[dict[str, Any]]) -> None:
     total = _field_decimal(payload.get("total"))
     if total is None or total <= Decimal("0.00"):
@@ -415,9 +482,17 @@ def _validate_item_sum(payload: Mapping[str, Any], issues: list[dict[str, Any]])
         saw_item_total = True
         items_total += line_total
 
+    if not saw_item_total:
+        return
+
     adjusted_item_total = items_total - discount
-    difference = abs(adjusted_item_total - total)
-    if saw_item_total and difference > ITEM_TOTAL_TOLERANCE:
+    raw_difference = abs(items_total - total)
+    adjusted_difference = abs(adjusted_item_total - total)
+    if raw_difference <= ITEM_TOTAL_TOLERANCE or adjusted_difference <= ITEM_TOTAL_TOLERANCE:
+        return
+
+    difference = min(raw_difference, adjusted_difference)
+    if difference > ITEM_TOTAL_TOLERANCE:
         issue = _issue(
             path="total",
             code="item_sum_mismatch",
@@ -486,6 +561,50 @@ def _positive_quantity_value(value: Any) -> Decimal | None:
 
 def _field_is_blank(field: Any) -> bool:
     return str(_field_raw_value(field) or "").strip() == ""
+
+
+def _fill_single_quantity_unit_price(item: MutableMapping[str, Any]) -> None:
+    quantity = _field_positive_quantity(item.get("quantity"))
+    if quantity != Decimal("1.000"):
+        return
+
+    line_total = item.get("line_total")
+    line_total_amount = _field_decimal(line_total)
+    if line_total_amount is None or line_total_amount <= Decimal("0.00"):
+        return
+
+    unit_price = item.get("unit_price")
+    if not _needs_single_quantity_unit_price_fallback(unit_price, line_total_amount):
+        return
+
+    item["unit_price"] = _field_with_amount_value(line_total, line_total_amount)
+
+
+def _needs_single_quantity_unit_price_fallback(unit_price: Any, line_total_amount: Decimal) -> bool:
+    if isinstance(unit_price, Mapping) and unit_price.get("reviewed"):
+        return False
+    unit_price_amount = _field_decimal(unit_price)
+    if unit_price_amount is None:
+        return True
+    if unit_price_amount != line_total_amount:
+        return False
+    return not parse_amounts_from_source_text(_field_source(unit_price))
+
+
+def _field_with_amount_value(field: Any, amount: Decimal) -> dict[str, Any]:
+    updated = _coerce_field(field)
+    updated["value"] = str(amount)
+    return updated
+
+
+def _missing_source_evidence_issue(path: str, field: Any) -> dict[str, Any]:
+    return _issue(
+        path=path,
+        code="missing_source_evidence",
+        message="Amount source evidence is missing or does not contain a parseable amount.",
+        extracted_value=_field_raw_value(field),
+        source_text=_field_source(field),
+    )
 
 
 def _issue(
@@ -558,7 +677,7 @@ def _replace_receipt_items(
         ReceiptItem.objects.create(
             receipt=receipt,
             name=item.name,
-            unit_price=item.unit_price,
+            unit_price=_item_unit_price_for_storage(item),
             line_total=item.line_total,
             quantity=_positive_quantity_value(item.quantity) or Decimal("1.000"),
             category=item.category or Category.OTHER,
@@ -573,14 +692,37 @@ def _payload_item_to_dataclass(
 ) -> ReceiptItemData:
     name = str(_field_raw_value(item.get("name")) or "")
     embedding = _item_embedding(name, item_embedding_fn)
+    line_total = _field_decimal(item.get("line_total")) or Decimal("0.00")
+    quantity = _field_positive_quantity(item.get("quantity")) or Decimal("1.000")
     return ReceiptItemData(
         name=name,
-        unit_price=_optional_float(_field_decimal(item.get("unit_price"))),
-        line_total=float(_field_decimal(item.get("line_total")) or Decimal("0.00")),
-        quantity=_field_positive_quantity(item.get("quantity")) or Decimal("1.000"),
+        unit_price=_optional_float(_payload_item_unit_price(item, line_total, quantity)),
+        line_total=float(line_total),
+        quantity=quantity,
         category=str(_field_raw_value(item.get("category")) or Category.OTHER),
         embedding=embedding,
     )
+
+
+def _payload_item_unit_price(item: Mapping[str, Any], line_total: Decimal, quantity: Decimal) -> Decimal | None:
+    unit_price = _field_decimal(item.get("unit_price"))
+    if unit_price is not None:
+        return unit_price
+    if quantity == Decimal("1.000") and line_total > Decimal("0.00"):
+        return line_total
+    return None
+
+
+def _item_unit_price_for_storage(item: ReceiptItemData) -> Decimal | None:
+    unit_price = _field_decimal(item.unit_price)
+    if unit_price is not None:
+        return unit_price
+
+    quantity = _positive_quantity_value(item.quantity) or Decimal("1.000")
+    line_total = _field_decimal(item.line_total)
+    if quantity == Decimal("1.000") and line_total is not None and line_total > Decimal("0.00"):
+        return line_total
+    return None
 
 
 def _item_embedding(
